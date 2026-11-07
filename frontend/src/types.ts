@@ -23,6 +23,7 @@ export interface AppSettings {
   screenshot_jitter_percent: number;
   location_interval_minutes: number;
   late_grace_minutes: number;
+  inactivity_alert_minutes: number;
 }
 
 export type AttendanceStatus =
@@ -56,6 +57,7 @@ export interface TrackingConfig {
   screenshot_interval_minutes: number;
   screenshot_jitter_percent: number;
   location_interval_minutes: number;
+  inactivity_alert_minutes: number;
   timezone: string;
   schedule: ScheduleWindow[];
   active_session_id: number | null;
@@ -110,6 +112,27 @@ export interface LiveUser {
   within_schedule: boolean;
   last_location: LocationPing | null;
   last_screenshot: Screenshot | null;
+  inactive_since: string | null;
+  inactive_kind: "idle" | "locked" | null;
+}
+
+export interface InactivityAlert {
+  id: number;
+  user_id: number;
+  full_name: string;
+  email: string;
+  timezone: string;
+  kind: "idle" | "locked";
+  started_at: string;
+  detected_at: string;
+  ended_at: string | null;
+  read_at: string | null;
+  duration_seconds: number;
+}
+
+export interface AlertsResponse {
+  unread: number;
+  items: InactivityAlert[];
 }
 
 export interface HoursRow {

@@ -100,7 +100,12 @@ export const IconAlarm = ({ size }: P) => (
     <path d="M12 9.5V13l2.5 1.5M4 4.5 6.5 2.5M20 4.5 17.5 2.5" />
   </Svg>
 );
-export const IconPause = ({ size }: P) => (
+export const IconBell = ({ size }: P) => (
+  <Svg size={size}>
+    <path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15L6 16zM10 20.5a2 2 0 0 0 4 0" />
+  </Svg>
+);
+export const IconPause =({ size }: P) => (
   <Svg size={size}>
     <path d="M9 6v12M15 6v12" />
   </Svg>

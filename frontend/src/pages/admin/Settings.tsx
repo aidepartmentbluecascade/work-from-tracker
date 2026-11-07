@@ -125,6 +125,40 @@ export default function SettingsPage() {
                 </span>
               </label>
             </div>
+            <div className="form-section">
+              <h3>Inactivity alerts</h3>
+              <p className="muted small" style={{ margin: "4px 0 12px" }}>
+                Notify admins (never the employee) when someone has no keyboard or mouse activity, or a locked screen,
+                for too long while working. Alerts appear under Alerts in the sidebar.
+              </p>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={s.inactivity_alert_minutes > 0}
+                  onChange={(e) => setS({ ...s, inactivity_alert_minutes: e.target.checked ? 10 : 0 })}
+                />
+                Alert admins about inactivity
+              </label>
+              {s.inactivity_alert_minutes > 0 && (
+                <label className="field" style={{ marginTop: 12, maxWidth: 360 }}>
+                  Inactive for at least
+                  <div className="row gap-sm">
+                    <input
+                      type="number"
+                      min={1}
+                      max={240}
+                      className="narrow"
+                      value={s.inactivity_alert_minutes}
+                      onChange={(e) =>
+                        setS({ ...s, inactivity_alert_minutes: Math.max(1, Number(e.target.value) || 1) })
+                      }
+                    />
+                    <span className="muted">minutes</span>
+                  </div>
+                  <span className="hint">Running sessions pick up a new value within a minute.</span>
+                </label>
+              )}
+            </div>
             {message && <div className={`alert ${message.kind === "ok" ? "success" : "error"}`}>{message.text}</div>}
             <div className="form-actions">
               <button className="btn primary" disabled={busy}>

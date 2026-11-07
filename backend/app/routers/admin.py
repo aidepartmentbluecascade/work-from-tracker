@@ -3,14 +3,25 @@
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from .. import storage
 from ..database import get_db
 from ..deps import require_admin
-from ..models import ActivityEvent, LocationPing, Role, Screenshot, User, WorkSchedule, WorkSession
+from ..models import (
+    ActivityEvent,
+    InactivityAlert,
+    LocationPing,
+    Role,
+    Screenshot,
+    User,
+    WorkSchedule,
+    WorkSession,
+)
 from ..schemas import (
+    AlertOut,
+    AlertsOut,
     AttendanceRow,
     AppSettingsOut,
     AppSettingsUpdate,
@@ -231,6 +242,15 @@ def live(db: Session = Depends(get_db)):
         last_shot = db.scalars(
             select(Screenshot).where(Screenshot.session_id == s.id).order_by(Screenshot.captured_at.desc())
         ).first()
+        inactive = db.scalars(
+            select(InactivityAlert)
+            .where(
+                InactivityAlert.user_id == user.id,
+                InactivityAlert.ended_at.is_(None),
+                InactivityAlert.detected_at <= utcnow(),
+            )
+            .order_by(InactivityAlert.started_at)
+        ).first()
         result.append(
             LiveUser(
                 user=UserOut.model_validate(user),
@@ -238,13 +258,62 @@ def live(db: Session = Depends(get_db)):
                 within_schedule=within_schedule(user.schedules, user.timezone),
                 last_location=LocationOut.model_validate(last_loc) if last_loc else None,
                 last_screenshot=_with_url(last_shot) if last_shot else None,
+                inactive_since=inactive.started_at if inactive else None,
+                inactive_kind=inactive.kind if inactive else None,
             )
         )
     result.sort(key=lambda r: r.user.full_name)
     return result
 
 
-EARLY_START_WINDOW = timedelta(hours=4)  # a session up to 4h before the expected start still counts for that day
+@router.get("/alerts", response_model=AlertsOut)
+def list_alerts(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
+    now = utcnow()
+    visible = InactivityAlert.detected_at <= now
+    rows = db.execute(
+        select(InactivityAlert, User)
+        .join(User, User.id == InactivityAlert.user_id)
+        .where(visible)
+        .order_by(InactivityAlert.detected_at.desc())
+        .limit(limit)
+    ).all()
+    unread = db.scalar(
+        select(func.count()).select_from(InactivityAlert).where(visible, InactivityAlert.read_at.is_(None))
+    )
+    return AlertsOut(
+        unread=unread or 0,
+        items=[
+            AlertOut(
+                id=a.id,
+                user_id=u.id,
+                full_name=u.full_name,
+                email=u.email,
+                timezone=u.timezone,
+                kind=a.kind,
+                started_at=a.started_at,
+                detected_at=a.detected_at,
+                ended_at=a.ended_at,
+                read_at=a.read_at,
+                duration_seconds=((a.ended_at or now) - a.started_at).total_seconds(),
+            )
+            for a, u in rows
+        ],
+    )
+
+
+@router.post("/alerts/read-all")
+def mark_alerts_read(db: Session = Depends(get_db)):
+    now = utcnow()
+    db.execute(
+        update(InactivityAlert)
+        .where(InactivityAlert.read_at.is_(None), InactivityAlert.detected_at <= now)
+        .values(read_at=now)
+    )
+    db.commit()
+    return {"ok": True}
+
+
+EARLY_START_WINDOW =timedelta(hours=4)  # a session up to 4h before the expected start still counts for that day
 
 
 def _attendance_for(db: Session, user: User, day: date, grace: timedelta, now: datetime) -> AttendanceRow:

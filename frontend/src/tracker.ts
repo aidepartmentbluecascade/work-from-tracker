@@ -26,7 +26,6 @@ export interface TrackerStatus {
 
 const HEARTBEAT_MS = 60_000;
 const RETRY_RESUME_MS = 30_000;
-const IDLE_THRESHOLD_MS = 5 * 60_000;
 const MAX_WIDTH = 1920;
 const JPEG_QUALITY = 0.7;
 
@@ -95,6 +94,7 @@ export class Tracker {
   private config: TrackingConfig | null = null;
   private sessionId: number | null = null;
   private blankStreak = false;
+  private lockDetection = false;
   private shotTimer: number | undefined;
   private heartbeatTimer: number | undefined;
   private locationTimer: number | undefined;
@@ -121,7 +121,8 @@ export class Tracker {
     return this.running;
   }
 
-  async start(): Promise<void> {
+  /** Start work. Pass `resumeSessionId` to continue a session interrupted by a page refresh. */
+  async start(resumeSessionId?: number): Promise<void> {
     if (this.running) return;
     if (!navigator.mediaDevices?.getDisplayMedia) {
       throw new Error("This browser can't capture the screen. Please use Chrome, Edge or Firefox on a computer.");
@@ -163,10 +164,12 @@ export class Tracker {
       throw new Error('Please share your "Entire screen", not a window or tab.');
     }
 
-    // 3) Open a session on the server.
+    // 3) Continue the interrupted session if it's still open, otherwise open a new one.
     let session: WorkSession;
+    let resumed = false;
     try {
-      session = await api<WorkSession>("/tracking/sessions/start", { method: "POST" });
+      session = await this.openOrResume(resumeSessionId);
+      resumed = resumeSessionId !== undefined && session.id === resumeSessionId;
     } catch (err) {
       stream.getTracks().forEach((t) => t.stop());
       throw err;
@@ -200,11 +203,24 @@ export class Tracker {
       message: null,
     });
 
+    if (resumed) void this.logEvent("page_reloaded");
     if (position) void this.sendLocation(position);
     else void this.logEvent("location_unavailable", "Position unavailable at start");
     if (!lockDetection) void this.logEvent("lock_detection_unavailable");
 
     this.startLoops(5_000);
+  }
+
+  private async openOrResume(resumeSessionId?: number): Promise<WorkSession> {
+    if (resumeSessionId !== undefined) {
+      try {
+        return await api<WorkSession>(`/tracking/sessions/${resumeSessionId}/resume`, { method: "POST" });
+      } catch (err) {
+        // 404/409: it already ended (e.g. the refresh took longer than 5 minutes) — start a new one.
+        if (!(err instanceof ApiError) || (err.status !== 404 && err.status !== 409)) throw err;
+      }
+    }
+    return api<WorkSession>("/tracking/sessions/start", { method: "POST" });
   }
 
   async stop(reason = "manual"): Promise<void> {
@@ -227,8 +243,16 @@ export class Tracker {
     }
   }
 
+  /** Inactivity threshold set by admins (Settings); the browser's minimum is 1 minute. */
+  private idleThresholdMs(): number {
+    const minutes = this.config?.inactivity_alert_minutes || 5;
+    return Math.max(1, minutes) * 60_000;
+  }
+
   private async startLockDetection() {
     if (!IdleDetectorCls) return;
+    this.idleAbort?.abort();
+    this.lockDetection = true;
     try {
       const detector = new IdleDetectorCls();
       this.idleAbort = new AbortController();
@@ -244,7 +268,7 @@ export class Tracker {
           lastUser = detector.userState;
         }
       });
-      await detector.start({ threshold: IDLE_THRESHOLD_MS, signal: this.idleAbort.signal });
+      await detector.start({ threshold: this.idleThresholdMs(), signal: this.idleAbort.signal });
     } catch {
       void this.logEvent("lock_detection_unavailable");
     }
@@ -338,6 +362,7 @@ export class Tracker {
     window.clearTimeout(this.resumeTimer);
     this.idleAbort?.abort();
     this.idleAbort = null;
+    this.lockDetection = false;
     document.removeEventListener("visibilitychange", this.onVisibility);
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
@@ -479,6 +504,9 @@ export class Tracker {
       }
       if (old && old.screenshot_interval_minutes !== res.config.screenshot_interval_minutes) this.scheduleScreenshot();
       if (old && old.location_interval_minutes !== res.config.location_interval_minutes) this.startLocationLoop();
+      if (this.lockDetection && old && old.inactivity_alert_minutes !== res.config.inactivity_alert_minutes) {
+        void this.startLockDetection(); // admin changed the inactivity threshold
+      }
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 404)) this.teardown("Signed out.");
       // Otherwise: temporary network problem, keep going.

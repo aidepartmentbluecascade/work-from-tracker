@@ -22,6 +22,7 @@ export const keys = {
   schedule: (id: number) => ["users", id, "schedule"] as const,
   dayData: (id: number, kind: string, day: string) => ["users", id, kind, day] as const,
   settings: ["settings"] as const,
+  alerts: ["alerts"] as const,
   live: ["live"] as const,
   attendance: (day: string, userId?: number) => ["attendance", day, userId ?? "all"] as const,
   hours: (from: string, to: string) => ["hours", from, to] as const,

@@ -8,6 +8,7 @@ import Dashboard from "./pages/admin/Dashboard";
 import Users from "./pages/admin/Users";
 import UserDetail from "./pages/admin/UserDetail";
 import SettingsPage from "./pages/admin/Settings";
+import Alerts from "./pages/admin/Alerts";
 import type { Role } from "./types";
 
 function RequireRole({ role, children }: { role: Role; children: ReactNode }) {
@@ -42,6 +43,7 @@ export default function App() {
         <Route path="users" element={<Users />} />
         <Route path="users/:id" element={<UserDetail />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="alerts" element={<Alerts />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

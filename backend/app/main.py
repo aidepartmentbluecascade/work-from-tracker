@@ -18,9 +18,8 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     # Lightweight upgrades for tables created by earlier versions (create_all never adds columns).
     with engine.begin() as conn:
-        conn.execute(
-            text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS late_grace_minutes INTEGER NOT NULL DEFAULT 10")
-        )
+        for column in ("late_grace_minutes", "inactivity_alert_minutes"):
+            conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS {column} INTEGER NOT NULL DEFAULT 10"))
     with SessionLocal() as db:
         get_app_settings(db)
         has_admin = db.scalars(select(User).where(User.role == Role.admin)).first()

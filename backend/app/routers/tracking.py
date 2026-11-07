@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import storage
+from ..alerts import close_open_alerts, handle_event
 from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user
@@ -47,6 +48,7 @@ def build_config(db: Session, user: User) -> TrackingConfig:
         screenshot_interval_minutes=effective_interval(user, app),
         screenshot_jitter_percent=app.screenshot_jitter_percent,
         location_interval_minutes=app.location_interval_minutes,
+        inactivity_alert_minutes=app.inactivity_alert_minutes,
         timezone=user.timezone,
         schedule=[ScheduleWindow.model_validate(s) for s in user.schedules],
         active_session_id=active.id if active else None,
@@ -97,6 +99,17 @@ def start_session(request: Request, user: User = Depends(get_current_user), db: 
     return s
 
 
+@router.post("/sessions/{session_id}/resume", response_model=SessionOut)
+def resume_session(session_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Continue an open session after the page was refreshed (404/409 if it already ended)."""
+    if not user.tracking_enabled:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Tracking is disabled for your account")
+    s = get_live_session(db, user, session_id)
+    s.last_heartbeat_at = utcnow()
+    db.commit()
+    return s
+
+
 @router.post("/sessions/{session_id}/heartbeat", response_model=HeartbeatOut)
 def heartbeat(session_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     s = db.get(WorkSession, session_id)
@@ -124,6 +137,8 @@ def stop_session(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     if s.ended_at is None:
         end_session(db, s, body.reason)
+    if body.reason != "screen_locked":  # a lock pause keeps its alert open until unlock
+        close_open_alerts(db, user.id)
     return s
 
 
@@ -203,6 +218,7 @@ def add_event(body: EventIn, user: User = Depends(get_current_user), db: Session
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     db.add(ActivityEvent(user_id=user.id, session_id=body.session_id, event_type=body.event_type, detail=body.detail))
     db.commit()
+    handle_event(db, user, body.event_type, body.session_id)
     return {"ok": True}
 
 

@@ -61,6 +61,8 @@ class AppSettings(Base):
     location_interval_minutes: Mapped[int] = mapped_column(default=15)
     # Starting more than this many minutes after the expected start counts as "late".
     late_grace_minutes: Mapped[int] = mapped_column(default=10, server_default="10")
+    # Alert admins when an employee has no keyboard/mouse activity (or a locked screen) this long. 0 = off.
+    inactivity_alert_minutes: Mapped[int] = mapped_column(default=10, server_default="10")
 
 
 class WorkSchedule(Base):
@@ -129,6 +131,25 @@ class LocationPing(Base):
     latitude: Mapped[float] = mapped_column(Float)
     longitude: Mapped[float] = mapped_column(Float)
     accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class InactivityAlert(Base):
+    """An inactivity period shown to admins. Only the admin side ever sees these."""
+
+    __tablename__ = "inactivity_alerts"
+    __table_args__ = (Index("ix_alerts_detected", "detected_at"), Index("ix_alerts_user_open", "user_id", "ended_at"))
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    session_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(20))  # idle | locked
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # when inactivity began
+    # When admins should see it. For a lock this is lock time + threshold (hidden until then).
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ActivityEvent(Base):

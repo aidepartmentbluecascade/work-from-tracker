@@ -67,11 +67,14 @@ export default function UserHome() {
 
   useEffect(() => () => void tracker.stop("manual"), [tracker]);
 
+  // A session still open on the server while this page isn't tracking = the page was refreshed/reopened.
+  const interruptedId = !active && config?.active_session_id != null ? config.active_session_id : null;
+
   async function start() {
     setBusy(true);
     setError(null);
     try {
-      await tracker.start();
+      await tracker.start(interruptedId ?? undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -82,6 +85,19 @@ export default function UserHome() {
   async function stop() {
     setBusy(true);
     await tracker.stop("manual");
+    qc.setQueryData<TrackingConfig>(keys.myConfig, (c) => (c ? { ...c, active_session_id: null } : c));
+    setBusy(false);
+  }
+
+  /** Close an interrupted session without resuming (e.g. done for the day). */
+  async function endInterrupted() {
+    if (interruptedId === null) return;
+    setBusy(true);
+    await api(`/tracking/sessions/${interruptedId}/stop`, { method: "POST", body: { reason: "manual" } }).catch(
+      () => undefined,
+    );
+    qc.setQueryData<TrackingConfig>(keys.myConfig, (c) => (c ? { ...c, active_session_id: null } : c));
+    qc.invalidateQueries({ queryKey: ["me"] });
     setBusy(false);
   }
 
@@ -93,7 +109,9 @@ export default function UserHome() {
   // Make an unexpected stop visible even when this tab is in the background.
   const wasActive = useRef(false);
   useEffect(() => {
-    if (active) {
+    if (interruptedId !== null) {
+      document.title = "⚠ Click Resume — WFH Tracker";
+    } else if (active) {
       wasActive.current = true;
       document.title = status?.paused ? "⏸ Paused — WFH Tracker" : "● Tracking — WFH Tracker";
     } else if (wasActive.current && status?.message && status.message !== "You stopped work.") {
@@ -101,7 +119,7 @@ export default function UserHome() {
     } else {
       document.title = "WFH Tracker";
     }
-  }, [active, status?.paused, status?.message]);
+  }, [active, status?.paused, status?.message, interruptedId]);
 
   const tz = config?.timezone;
   const paused = active && (status?.paused ?? false);
@@ -126,12 +144,26 @@ export default function UserHome() {
       </header>
 
       <main className="user-main">
-        <section className={`card hero ${paused ? "paused" : active ? "on" : ""}`}>
+        <section className={`card hero ${paused || interruptedId !== null ? "paused" : active ? "on" : ""}`}>
           <div className="hero-ring">
-            {paused ? <IconPause size={26} /> : active ? <span className="live-dot" /> : <IconClock size={26} />}
+            {paused || interruptedId !== null ? (
+              <IconPause size={26} />
+            ) : active ? (
+              <span className="live-dot" />
+            ) : (
+              <IconClock size={26} />
+            )}
           </div>
           <div className="grow">
-            {paused ? (
+            {interruptedId !== null ? (
+              <>
+                <h2>Tracking paused by page refresh</h2>
+                <p className="muted" style={{ margin: "4px 0 0" }}>
+                  Your work session is still open. Click <strong>Resume</strong> and choose{" "}
+                  <strong>Entire screen</strong> again to continue — your time keeps adding up.
+                </p>
+              </>
+            ) : paused ? (
               <>
                 <h2>{status?.pauseReason === "screen_locked" ? "Paused — screen locked" : "Reconnecting…"}</h2>
                 <p className="muted" style={{ margin: "4px 0 0" }}>
@@ -177,6 +209,15 @@ export default function UserHome() {
             <button className="btn danger lg" onClick={stop} disabled={busy}>
               Stop work
             </button>
+          ) : interruptedId !== null ? (
+            <div className="row gap wrap">
+              <button className="btn ghost" onClick={endInterrupted} disabled={busy}>
+                End session
+              </button>
+              <button className="btn primary lg" onClick={start} disabled={busy || !canStart}>
+                {busy ? "Resuming…" : "Resume"}
+              </button>
+            </div>
           ) : (
             <button className="btn primary lg" onClick={start} disabled={busy || !canStart}>
               {busy ? "Starting…" : "Start work"}
@@ -243,7 +284,7 @@ export default function UserHome() {
                   {config?.screenshot_interval_minutes ?? "–"} minutes (exact times vary).
                 </li>
                 <li>Your approximate location about every {config?.location_interval_minutes ?? "–"} minutes.</li>
-                <li>Start/stop times, and when this tab is hidden or shown.</li>
+                <li>Start/stop times, when this tab is hidden or shown, and periods without keyboard or mouse use.</li>
               </ul>
               <p className="muted small" style={{ margin: 0 }}>
                 When you start, allow location and choose <strong>Entire screen</strong>. Keep this tab open (it can be

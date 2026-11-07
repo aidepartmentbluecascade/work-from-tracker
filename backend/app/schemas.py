@@ -87,6 +87,7 @@ class AppSettingsOut(ORM):
     screenshot_jitter_percent: int
     location_interval_minutes: int
     late_grace_minutes: int
+    inactivity_alert_minutes: int
 
 
 class AppSettingsUpdate(BaseModel):
@@ -94,6 +95,7 @@ class AppSettingsUpdate(BaseModel):
     screenshot_jitter_percent: int | None = Field(default=None, ge=0, le=50)
     location_interval_minutes: int | None = Field(default=None, ge=1, le=240)
     late_grace_minutes: int | None = Field(default=None, ge=0, le=240)
+    inactivity_alert_minutes: int | None = Field(default=None, ge=0, le=240)  # 0 turns alerts off
 
 
 class AttendanceRow(BaseModel):
@@ -120,6 +122,7 @@ class TrackingConfig(BaseModel):
     screenshot_interval_minutes: int
     screenshot_jitter_percent: int
     location_interval_minutes: int
+    inactivity_alert_minutes: int
     timezone: str
     schedule: list[ScheduleWindow]
     active_session_id: int | None
@@ -198,6 +201,27 @@ class LiveUser(BaseModel):
     within_schedule: bool
     last_location: LocationOut | None
     last_screenshot: ScreenshotOut | None
+    inactive_since: datetime | None = None
+    inactive_kind: str | None = None
+
+
+class AlertOut(BaseModel):
+    id: int
+    user_id: int
+    full_name: str
+    email: str
+    timezone: str
+    kind: str
+    started_at: datetime
+    detected_at: datetime
+    ended_at: datetime | None
+    read_at: datetime | None
+    duration_seconds: float
+
+
+class AlertsOut(BaseModel):
+    unread: int
+    items: list[AlertOut]
 
 
 class HoursRow(BaseModel):

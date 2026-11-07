@@ -201,6 +201,12 @@ input.narrow { width: 84px; }
 .nav a:hover { background: #f3f4f7; color: var(--text); }
 .nav a.active { background: var(--primary-soft); color: var(--primary); }
 .nav a.active svg { color: var(--primary); }
+.nav-badge {
+  margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
+  background: var(--danger); color: #fff; font-size: 0.72rem; font-weight: 600; display: grid; place-items: center;
+}
+.unread-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); flex-shrink: 0; }
+.table tr.unread td { background: #fafaff; }
 .sidebar-foot { margin-top: auto; border-top: 1px solid var(--border); padding: 14px 6px 0; display: flex; align-items: center; gap: 10px; }
 .main { flex: 1; min-width: 0; padding: 28px 32px 48px; }
 .main-inner { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }

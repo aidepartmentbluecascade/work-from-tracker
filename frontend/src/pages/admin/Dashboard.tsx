@@ -158,6 +158,12 @@ export default function Dashboard() {
                               {lateByUser.get(l.user.id)?.status === "late" && (
                                 <AttendancePill row={lateByUser.get(l.user.id)!} />
                               )}
+                              {l.inactive_since && (
+                                <span className="pill amber" title="No keyboard/mouse activity or screen locked">
+                                  <span className="dot" />
+                                  {l.inactive_kind === "locked" ? "Locked" : "Inactive"} {since(l.inactive_since)}
+                                </span>
+                              )}
                             </div>
                             <div className="person-sub">{l.user.email}</div>
                           </div>

@@ -51,8 +51,9 @@ export const EVENT_LABELS: Record<string, string> = {
   screen_unlocked: "Screen unlocked — tracking resumed",
   session_resumed: "Tracking resumed after sleep / connection loss",
   blank_screen: "Screen was blank (locked or display off) — screenshot skipped",
-  user_idle: "Inactive for 5+ minutes",
+  user_idle: "Inactive (no keyboard or mouse use)",
   user_active: "Active again",
+  page_reloaded: "Page refreshed — tracking resumed",
   lock_detection_unavailable: "Lock detection not available in this browser",
 };
 
