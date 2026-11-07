@@ -45,7 +45,6 @@ services:
   - type: web
     name: wfh-tracker
     runtime: static
-    region: oregon
     rootDir: frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
