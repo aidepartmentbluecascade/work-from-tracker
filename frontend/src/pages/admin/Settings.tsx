@@ -1,17 +1,24 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api";
+import { keys } from "../../queryClient";
 import type { AppSettings } from "../../types";
 
 export default function SettingsPage() {
-  const [s, setS] = useState<AppSettings | null>(null);
+  const qc = useQueryClient();
+  const settingsQ = useQuery({
+    queryKey: keys.settings,
+    queryFn: () => api<AppSettings>("/admin/settings"),
+    refetchOnWindowFocus: false, // don't overwrite a form being edited
+  });
+  const [s, setS] = useState<AppSettings | null>(settingsQ.data ?? null);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Fill the form once data arrives (instantly from cache on revisits).
   useEffect(() => {
-    api<AppSettings>("/admin/settings")
-      .then(setS)
-      .catch((e) => setMessage({ kind: "error", text: e.message }));
-  }, []);
+    if (settingsQ.data && !s) setS(settingsQ.data);
+  }, [settingsQ.data, s]);
 
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -19,7 +26,10 @@ export default function SettingsPage() {
     setBusy(true);
     setMessage(null);
     try {
-      setS(await api<AppSettings>("/admin/settings", { method: "PATCH", body: s }));
+      const saved = await api<AppSettings>("/admin/settings", { method: "PATCH", body: s });
+      qc.setQueryData(keys.settings, saved);
+      qc.invalidateQueries({ queryKey: ["attendance"] }); // grace period affects late marking
+      setS(saved);
       setMessage({ kind: "ok", text: "Saved. Running sessions pick up changes within a minute." });
     } catch (err) {
       setMessage({ kind: "error", text: err instanceof Error ? err.message : String(err) });
@@ -37,8 +47,8 @@ export default function SettingsPage() {
         </div>
       </div>
       {!s ? (
-        message ? (
-          <div className="alert error">{message.text}</div>
+        settingsQ.error ? (
+          <div className="alert error">{settingsQ.error.message}</div>
         ) : (
           <p className="muted">Loading…</p>
         )

@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api";
+import { keys } from "../../queryClient";
+import { useAuth } from "../../auth";
 import Avatar from "../../components/Avatar";
-import { IconPlus, IconSearch, IconUsers } from "../../components/Icons";
+import DeleteUserDialog from "../../components/DeleteUserDialog";
+import { IconPlus, IconSearch, IconTrash, IconUsers } from "../../components/Icons";
 import { allTimezones } from "../../format";
 import type { Role, User } from "../../types";
 
@@ -30,7 +34,9 @@ export function StatusPill({ user }: { user: User }) {
 
 export default function Users() {
   const navigate = useNavigate();
-  const [users, setUsers] = useState<User[] | null>(null);
+  const qc = useQueryClient();
+  const usersQ = useQuery({ queryKey: keys.users, queryFn: () => api<User[]>("/admin/users") });
+  const users = usersQ.data ?? null;
   const [query, setQuery] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,15 +47,10 @@ export default function Users() {
   const [role, setRole] = useState<Role>("user");
   const [timezone, setTimezone] = useState(browserTz);
   const [busy, setBusy] = useState(false);
+  const [toDelete, setToDelete] = useState<User | null>(null);
+  const { user: me } = useAuth();
 
-  const load = () =>
-    api<User[]>("/admin/users")
-      .then(setUsers)
-      .catch((e) => setError(e.message));
-
-  useEffect(() => {
-    load();
-  }, []);
+  const load = () => qc.invalidateQueries({ queryKey: keys.users, exact: true });
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -90,7 +91,7 @@ export default function Users() {
           <IconPlus size={16} /> {showForm ? "Close" : "Add user"}
         </button>
       </div>
-      {error && <div className="alert error">{error}</div>}
+      {(error ?? usersQ.error?.message) && <div className="alert error">{error ?? usersQ.error?.message}</div>}
 
       {showForm && (
         <form className="card" onSubmit={create}>
@@ -173,6 +174,7 @@ export default function Users() {
                   <th>Timezone</th>
                   <th>Screenshot every</th>
                   <th>Status</th>
+                  <th style={{ width: 56 }} aria-label="Actions" />
                 </tr>
               </thead>
               <tbody>
@@ -203,6 +205,17 @@ export default function Users() {
                     <td>
                       <StatusPill user={u} />
                     </td>
+                    <td onClick={(e) => e.stopPropagation()} style={{ textAlign: "right" }}>
+                      <button
+                        className="btn ghost icon row-delete"
+                        onClick={() => setToDelete(u)}
+                        disabled={u.id === me?.id}
+                        title={u.id === me?.id ? "You can't delete your own account" : `Delete ${u.full_name}`}
+                        aria-label={`Delete ${u.full_name}`}
+                      >
+                        <IconTrash size={17} />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -210,6 +223,20 @@ export default function Users() {
           </div>
         )}
       </section>
+
+      {toDelete && (
+        <DeleteUserDialog
+          user={toDelete}
+          onClose={() => setToDelete(null)}
+          onDeleted={() => {
+            qc.setQueryData<User[]>(keys.users, (list) => list?.filter((x) => x.id !== toDelete.id));
+            qc.removeQueries({ queryKey: keys.user(toDelete.id) });
+            qc.invalidateQueries({ queryKey: keys.live });
+            qc.invalidateQueries({ queryKey: ["attendance"] });
+            setToDelete(null);
+          }}
+        />
+      )}
     </>
   );
 }

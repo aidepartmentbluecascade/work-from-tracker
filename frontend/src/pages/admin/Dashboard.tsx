@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "../../api";
+import { keys } from "../../queryClient";
 import AttendancePill from "../../components/AttendancePill";
 import Avatar from "../../components/Avatar";
 import { IconAlarm, IconClock, IconPulse, IconUsers } from "../../components/Icons";
@@ -20,23 +22,31 @@ function since(iso: string): string {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [live, setLive] = useState<LiveUser[] | null>(null);
-  const [hours, setHours] = useState<HoursRow[] | null>(null);
   const [from, setFrom] = useState(startOfWeek());
   const [to, setTo] = useState(isoDate(new Date()));
-  const [error, setError] = useState<string | null>(null);
   const [viewer, setViewer] = useState<number | null>(null);
-  const [attendance, setAttendance] = useState<AttendanceRow[] | null>(null);
   const [attDay, setAttDay] = useState(""); // "" = each employee's own today
 
-  const loadLive = useCallback(() => {
-    api<LiveUser[]>("/admin/live")
-      .then(setLive)
-      .catch((e) => setError(e.message));
-    api<AttendanceRow[]>(`/admin/attendance${attDay ? `?date=${attDay}` : ""}`)
-      .then(setAttendance)
-      .catch((e) => setError(e.message));
-  }, [attDay]);
+  // Cached: revisiting the page shows the last data instantly, then refreshes every 30s.
+  const liveQ = useQuery({
+    queryKey: keys.live,
+    queryFn: () => api<LiveUser[]>("/admin/live"),
+    refetchInterval: 30_000,
+  });
+  const attQ = useQuery({
+    queryKey: keys.attendance(attDay || "today"),
+    queryFn: () => api<AttendanceRow[]>(`/admin/attendance${attDay ? `?date=${attDay}` : ""}`),
+    refetchInterval: attDay ? false : 30_000,
+  });
+  const hoursQ = useQuery({
+    queryKey: keys.hours(from, to),
+    queryFn: () => api<HoursRow[]>(`/admin/reports/hours?start=${from}&end=${to}`),
+    placeholderData: keepPreviousData,
+  });
+  const live = liveQ.data ?? null;
+  const attendance = attQ.data ?? null;
+  const hours = hoursQ.data ?? null;
+  const error = (liveQ.error ?? attQ.error ?? hoursQ.error)?.message ?? null;
 
   const lateByUser = useMemo(() => {
     const m = new Map<number, AttendanceRow>();
@@ -51,18 +61,6 @@ export default function Dashboard() {
   const sortedAttendance = [...(attendance ?? [])].sort(
     (a, b) => ATT_ORDER[a.status]! - ATT_ORDER[b.status]! || b.late_minutes - a.late_minutes,
   );
-
-  useEffect(() => {
-    loadLive();
-    const t = window.setInterval(loadLive, 30_000);
-    return () => window.clearInterval(t);
-  }, [loadLive]);
-
-  useEffect(() => {
-    api<HoursRow[]>(`/admin/reports/hours?start=${from}&end=${to}`)
-      .then(setHours)
-      .catch((e) => setError(e.message));
-  }, [from, to]);
 
   const withShots = useMemo(() => (live ?? []).filter((l) => l.last_screenshot?.url), [live]);
   const lightboxItems: LightboxItem[] = withShots.map((l) => ({

@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { keys } from "../queryClient";
 import { useAuth } from "../auth";
 import Avatar from "../components/Avatar";
-import { IconCamera, IconClock, IconLogout, IconMonitor, IconPin } from "../components/Icons";
+import { IconCamera, IconClock, IconLogout, IconMonitor, IconPause, IconPin } from "../components/Icons";
 import { fmtDuration, fmtTime, hhmm, WEEKDAYS } from "../format";
 import { Tracker, type TrackerStatus } from "../tracker";
 import type { MyStats, TrackingConfig } from "../types";
@@ -17,8 +19,6 @@ function clock(ms: number): string {
 export default function UserHome() {
   const { user, logout } = useAuth();
   const [status, setStatus] = useState<TrackerStatus | null>(null);
-  const [config, setConfig] = useState<TrackingConfig | null>(null);
-  const [stats, setStats] = useState<MyStats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [, setTick] = useState(0);
@@ -28,20 +28,24 @@ export default function UserHome() {
   const tracker = trackerRef.current;
   const active = status?.active ?? false;
 
-  const refresh = useCallback(() => {
-    api<TrackingConfig>("/tracking/config").then(setConfig).catch(() => undefined);
-    api<MyStats>("/tracking/me/stats").then(setStats).catch(() => undefined);
-  }, []);
+  const qc = useQueryClient();
+  const config =
+    useQuery({
+      queryKey: keys.myConfig,
+      queryFn: () => api<TrackingConfig>("/tracking/config"),
+      refetchInterval: 60_000,
+    }).data ?? null;
+  const stats =
+    useQuery({
+      queryKey: keys.myStats,
+      queryFn: () => api<MyStats>("/tracking/me/stats"),
+      refetchInterval: 60_000,
+    }).data ?? null;
 
+  // Refresh hours when tracking starts or stops.
   useEffect(() => {
-    refresh();
-    const t = window.setInterval(refresh, 60_000);
-    return () => window.clearInterval(t);
-  }, [refresh]);
-
-  useEffect(() => {
-    refresh();
-  }, [active, refresh]);
+    qc.invalidateQueries({ queryKey: ["me"] });
+  }, [active, qc]);
 
   // Live clock while working.
   useEffect(() => {
@@ -86,7 +90,21 @@ export default function UserHome() {
     logout();
   }
 
+  // Make an unexpected stop visible even when this tab is in the background.
+  const wasActive = useRef(false);
+  useEffect(() => {
+    if (active) {
+      wasActive.current = true;
+      document.title = status?.paused ? "⏸ Paused — WFH Tracker" : "● Tracking — WFH Tracker";
+    } else if (wasActive.current && status?.message && status.message !== "You stopped work.") {
+      document.title = "⚠ Tracking stopped — WFH Tracker";
+    } else {
+      document.title = "WFH Tracker";
+    }
+  }, [active, status?.paused, status?.message]);
+
   const tz = config?.timezone;
+  const paused = active && (status?.paused ?? false);
   const canStart = !!config && config.tracking_enabled;
 
   return (
@@ -108,10 +126,21 @@ export default function UserHome() {
       </header>
 
       <main className="user-main">
-        <section className={`card hero ${active ? "on" : ""}`}>
-          <div className="hero-ring">{active ? <span className="live-dot" /> : <IconClock size={26} />}</div>
+        <section className={`card hero ${paused ? "paused" : active ? "on" : ""}`}>
+          <div className="hero-ring">
+            {paused ? <IconPause size={26} /> : active ? <span className="live-dot" /> : <IconClock size={26} />}
+          </div>
           <div className="grow">
-            {active && status?.startedAt ? (
+            {paused ? (
+              <>
+                <h2>{status?.pauseReason === "screen_locked" ? "Paused — screen locked" : "Reconnecting…"}</h2>
+                <p className="muted" style={{ margin: "4px 0 0" }}>
+                  {status?.pauseReason === "screen_locked"
+                    ? "Tracking resumes automatically when you unlock your computer. Locked time isn't counted."
+                    : "Your computer was asleep or offline. Tracking resumes automatically — no need to restart."}
+                </p>
+              </>
+            ) : active && status?.startedAt ? (
               <>
                 <div className="muted small" style={{ fontWeight: 500 }}>
                   Working — tracking is on

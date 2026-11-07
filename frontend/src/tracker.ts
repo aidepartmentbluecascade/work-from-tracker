@@ -1,19 +1,22 @@
 /**
  * Browser-side tracker.
  *
- * - Asks the user to share their ENTIRE screen once per session (getDisplayMedia).
- * - Grabs a frame from that stream every N minutes (admin setting, with random jitter)
- *   and uploads it to the backend, which stores it in Google Cloud Storage.
- * - Sends the browser's geolocation every M minutes.
- * - Sends a heartbeat every minute; the server ends the session when the user's
- *   work timeline ends, tracking is disabled, or heartbeats stop.
+ * - Asks the user to share their ENTIRE screen once (getDisplayMedia).
+ * - Grabs a frame every N minutes (admin setting, with random jitter) and uploads it;
+ *   black frames (locked / sleeping screen) are skipped.
+ * - Sends geolocation every M minutes and a heartbeat every minute.
+ * - Pauses automatically while the screen is locked (Idle Detection API, Chrome/Edge) and
+ *   resumes on unlock. If the server ended the session because the computer slept, it opens
+ *   a new session automatically, so the employee never has to restart by hand.
  */
 import { api, ApiError } from "./api";
 import { END_REASONS } from "./format";
 import type { HeartbeatResponse, TrackingConfig, WorkSession } from "./types";
 
 export interface TrackerStatus {
-  active: boolean;
+  active: boolean; // the user has started work and screen sharing is live
+  paused: boolean; // temporarily not tracking (screen locked / reconnecting)
+  pauseReason: string | null;
   sessionId: number | null;
   startedAt: Date | null;
   lastScreenshotAt: Date | null;
@@ -22,12 +25,25 @@ export interface TrackerStatus {
 }
 
 const HEARTBEAT_MS = 60_000;
+const RETRY_RESUME_MS = 30_000;
+const IDLE_THRESHOLD_MS = 5 * 60_000;
 const MAX_WIDTH = 1920;
 const JPEG_QUALITY = 0.7;
 
 interface ImageCaptureLike {
   grabFrame(): Promise<ImageBitmap>;
 }
+
+interface IdleDetectorLike extends EventTarget {
+  readonly screenState: "locked" | "unlocked" | null;
+  readonly userState: "active" | "idle" | null;
+  start(opts: { threshold: number; signal: AbortSignal }): Promise<void>;
+}
+interface IdleDetectorCtor {
+  new (): IdleDetectorLike;
+  requestPermission(): Promise<"granted" | "denied">;
+}
+const IdleDetectorCls = (window as unknown as { IdleDetector?: IdleDetectorCtor }).IdleDetector;
 
 function getPosition(): Promise<GeolocationPosition> {
   return new Promise((resolve, reject) => {
@@ -44,20 +60,49 @@ function getPosition(): Promise<GeolocationPosition> {
 }
 
 function isPermissionDenied(err: unknown): boolean {
-  return typeof GeolocationPositionError !== "undefined" && err instanceof GeolocationPositionError && err.code === err.PERMISSION_DENIED;
+  return (
+    typeof GeolocationPositionError !== "undefined" &&
+    err instanceof GeolocationPositionError &&
+    err.code === err.PERMISSION_DENIED
+  );
+}
+
+/** True if the frame is (almost) entirely black — e.g. a locked or sleeping screen. */
+function isBlankFrame(source: CanvasImageSource): boolean {
+  const c = document.createElement("canvas");
+  c.width = 64;
+  c.height = 36;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return false;
+  ctx.drawImage(source, 0, 0, c.width, c.height);
+  const d = ctx.getImageData(0, 0, c.width, c.height).data;
+  let max = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = (d[i]! * 299 + d[i + 1]! * 587 + d[i + 2]! * 114) / 1000;
+    if (lum > max) max = lum;
+  }
+  return max < 16;
 }
 
 export class Tracker {
+  private running = false;
+  private paused = false;
+  private resuming = false;
   private stream: MediaStream | null = null;
   private video: HTMLVideoElement | null = null;
   private imageCapture: ImageCaptureLike | null = null;
+  private idleAbort: AbortController | null = null;
   private config: TrackingConfig | null = null;
   private sessionId: number | null = null;
+  private blankStreak = false;
   private shotTimer: number | undefined;
   private heartbeatTimer: number | undefined;
   private locationTimer: number | undefined;
+  private resumeTimer: number | undefined;
   private status: TrackerStatus = {
     active: false,
+    paused: false,
+    pauseReason: null,
     sessionId: null,
     startedAt: null,
     lastScreenshotAt: null,
@@ -73,14 +118,17 @@ export class Tracker {
   }
 
   get isActive() {
-    return this.sessionId !== null;
+    return this.running;
   }
 
   async start(): Promise<void> {
-    if (this.isActive) return;
+    if (this.running) return;
     if (!navigator.mediaDevices?.getDisplayMedia) {
       throw new Error("This browser can't capture the screen. Please use Chrome, Edge or Firefox on a computer.");
     }
+
+    // Must happen first, while the click still counts as a user gesture.
+    const lockDetection = await this.requestLockDetection();
 
     const config = await api<TrackingConfig>("/tracking/config");
     if (!config.tracking_enabled) throw new Error("Tracking is disabled for your account. Contact your admin.");
@@ -93,7 +141,6 @@ export class Tracker {
       if (isPermissionDenied(err)) {
         throw new Error("Location permission is required. Allow location for this site in your browser and try again.");
       }
-      // Position unavailable / timeout: continue, but report it.
     }
 
     // 2) Screen-share permission. Must be the entire screen.
@@ -102,7 +149,6 @@ export class Tracker {
       stream = await navigator.mediaDevices.getDisplayMedia({
         video: { displaySurface: "monitor", frameRate: 1 },
         audio: false,
-        // Chrome/Edge hints: offer whole screens, hide this tab and switching.
         monitorTypeSurfaces: "include",
         selfBrowserSurface: "exclude",
         surfaceSwitching: "exclude",
@@ -110,7 +156,7 @@ export class Tracker {
     } catch {
       throw new Error("Screen sharing is required to start work. Please choose your entire screen.");
     }
-    const track = stream.getVideoTracks()[0];
+    const track = stream.getVideoTracks()[0]!;
     const surface = (track.getSettings() as MediaTrackSettings & { displaySurface?: string }).displaySurface;
     if (surface && surface !== "monitor") {
       stream.getTracks().forEach((t) => t.stop());
@@ -126,6 +172,8 @@ export class Tracker {
       throw err;
     }
 
+    this.running = true;
+    this.paused = false;
     this.stream = stream;
     this.config = config;
     this.sessionId = session.id;
@@ -139,9 +187,12 @@ export class Tracker {
 
     track.addEventListener("ended", () => void this.stop("sharing_stopped"));
     document.addEventListener("visibilitychange", this.onVisibility);
+    if (lockDetection) void this.startLockDetection();
 
     this.update({
       active: true,
+      paused: false,
+      pauseReason: null,
       sessionId: session.id,
       startedAt: new Date(session.started_at),
       lastScreenshotAt: null,
@@ -151,36 +202,153 @@ export class Tracker {
 
     if (position) void this.sendLocation(position);
     else void this.logEvent("location_unavailable", "Position unavailable at start");
+    if (!lockDetection) void this.logEvent("lock_detection_unavailable");
 
-    this.heartbeatTimer = window.setInterval(() => void this.heartbeat(), HEARTBEAT_MS);
-    this.startLocationLoop();
-    this.scheduleScreenshot(5_000); // first capture shortly after starting
+    this.startLoops(5_000);
   }
 
   async stop(reason = "manual"): Promise<void> {
+    if (!this.running) return;
     const id = this.sessionId;
-    if (id === null) return;
     this.teardown(reason === "manual" ? "You stopped work." : END_REASONS[reason] ?? reason);
-    await api(`/tracking/sessions/${id}/stop`, { method: "POST", body: { reason } }).catch(() => undefined);
+    if (id !== null) {
+      await api(`/tracking/sessions/${id}/stop`, { method: "POST", body: { reason } }).catch(() => undefined);
+    }
   }
 
-  // ---------- internals ----------
+  // ---------- lock detection ----------
 
-  private teardown(message: string | null) {
+  private async requestLockDetection(): Promise<boolean> {
+    if (!IdleDetectorCls) return false;
+    try {
+      return (await IdleDetectorCls.requestPermission()) === "granted";
+    } catch {
+      return false;
+    }
+  }
+
+  private async startLockDetection() {
+    if (!IdleDetectorCls) return;
+    try {
+      const detector = new IdleDetectorCls();
+      this.idleAbort = new AbortController();
+      let lastUser: string | null = null;
+      detector.addEventListener("change", () => {
+        if (detector.screenState === "locked") {
+          void this.pause("screen_locked");
+        } else if (this.paused && this.status.pauseReason === "screen_locked") {
+          void this.resume("screen_unlocked");
+        }
+        if (detector.screenState !== "locked" && detector.userState !== lastUser) {
+          if (lastUser !== null) void this.logEvent(detector.userState === "idle" ? "user_idle" : "user_active");
+          lastUser = detector.userState;
+        }
+      });
+      await detector.start({ threshold: IDLE_THRESHOLD_MS, signal: this.idleAbort.signal });
+    } catch {
+      void this.logEvent("lock_detection_unavailable");
+    }
+  }
+
+  // ---------- pause / resume ----------
+
+  /** Stop counting time (ends the server session) but keep screen sharing alive. */
+  private async pause(reason: string) {
+    if (!this.running || this.paused) return;
+    await this.logEvent(reason);
+    this.paused = true;
+    this.stopLoops();
+    const id = this.sessionId;
+    this.sessionId = null;
+    this.update({ paused: true, pauseReason: reason, sessionId: null });
+    if (id !== null) {
+      await api(`/tracking/sessions/${id}/stop`, { method: "POST", body: { reason } }).catch(() => undefined);
+    }
+  }
+
+  /** Open a new session and continue tracking without asking the user again. */
+  private async resume(eventType: string) {
+    if (!this.running || this.resuming) return;
+    const track = this.stream?.getVideoTracks()[0];
+    if (!track || track.readyState === "ended") {
+      this.teardown(END_REASONS.sharing_stopped ?? "Screen sharing stopped");
+      return;
+    }
+    this.resuming = true;
+    window.clearTimeout(this.resumeTimer);
+    try {
+      const session = await api<WorkSession>("/tracking/sessions/start", { method: "POST" });
+      this.config = await api<TrackingConfig>("/tracking/config").catch(() => this.config);
+      this.sessionId = session.id;
+      this.paused = false;
+      this.blankStreak = false;
+      this.update({
+        paused: false,
+        pauseReason: null,
+        sessionId: session.id,
+        startedAt: new Date(session.started_at),
+        message: null,
+      });
+      void this.logEvent(eventType);
+      getPosition().then((p) => this.sendLocation(p)).catch(() => undefined);
+      this.startLoops(10_000);
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        this.teardown(err.status === 403 ? err.message : "Signed out.");
+      } else {
+        // Probably still offline after waking up — try again shortly.
+        this.paused = true;
+        this.update({ paused: true, pauseReason: "reconnecting" });
+        this.resumeTimer = window.setTimeout(() => void this.resume(eventType), RETRY_RESUME_MS);
+      }
+    } finally {
+      this.resuming = false;
+    }
+  }
+
+  /** The server closed our session (e.g. the computer slept): start a fresh one. */
+  private handleSessionLost() {
+    if (!this.running) return;
+    this.stopLoops();
+    this.sessionId = null;
+    this.paused = true;
+    this.update({ paused: true, pauseReason: "reconnecting", sessionId: null });
+    void this.resume("session_resumed");
+  }
+
+  // ---------- loops ----------
+
+  private startLoops(firstShotDelayMs?: number) {
+    this.stopLoops();
+    this.heartbeatTimer = window.setInterval(() => void this.heartbeat(), HEARTBEAT_MS);
+    this.startLocationLoop();
+    this.scheduleScreenshot(firstShotDelayMs);
+  }
+
+  private stopLoops() {
     window.clearTimeout(this.shotTimer);
     window.clearInterval(this.heartbeatTimer);
     window.clearInterval(this.locationTimer);
+  }
+
+  private teardown(message: string | null) {
+    this.running = false;
+    this.paused = false;
+    this.stopLoops();
+    window.clearTimeout(this.resumeTimer);
+    this.idleAbort?.abort();
+    this.idleAbort = null;
     document.removeEventListener("visibilitychange", this.onVisibility);
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     this.video = null;
     this.imageCapture = null;
     this.sessionId = null;
-    this.update({ active: false, sessionId: null, message });
+    this.update({ active: false, paused: false, pauseReason: null, sessionId: null, message });
   }
 
   private onVisibility = () => {
-    void this.logEvent(document.hidden ? "tab_hidden" : "tab_visible");
+    if (this.sessionId !== null) void this.logEvent(document.hidden ? "tab_hidden" : "tab_visible");
   };
 
   private scheduleScreenshot(delayMs?: number) {
@@ -191,7 +359,7 @@ export class Tracker {
     const delay = delayMs ?? Math.max(30_000, base * (1 + (Math.random() * 2 - 1) * jitter));
     this.shotTimer = window.setTimeout(async () => {
       await this.captureAndUpload();
-      if (this.isActive) this.scheduleScreenshot();
+      if (this.running && !this.paused) this.scheduleScreenshot();
     }, delay);
   }
 
@@ -207,7 +375,9 @@ export class Tracker {
     }, this.config.location_interval_minutes * 60_000);
   }
 
-  private async grabFrame(): Promise<{ blob: Blob; width: number; height: number }> {
+  // ---------- capture ----------
+
+  private async grabFrame(): Promise<{ blob: Blob; width: number; height: number } | "blank"> {
     let source: CanvasImageSource | null = null;
     let w = 0;
     let h = 0;
@@ -230,6 +400,11 @@ export class Tracker {
     }
     if (!source) throw new Error("No frame available");
 
+    if (isBlankFrame(source)) {
+      bitmap?.close();
+      return "blank";
+    }
+
     const scale = Math.min(1, MAX_WIDTH / w);
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(w * scale);
@@ -244,19 +419,26 @@ export class Tracker {
   }
 
   private async captureAndUpload() {
-    if (this.sessionId === null) return;
+    if (this.sessionId === null || this.paused) return;
     try {
-      const { blob, width, height } = await this.grabFrame();
+      const frame = await this.grabFrame();
+      if (frame === "blank") {
+        // Locked or sleeping display: don't store a black image.
+        if (!this.blankStreak) void this.logEvent("blank_screen");
+        this.blankStreak = true;
+        return;
+      }
+      this.blankStreak = false;
       const form = new FormData();
       form.append("session_id", String(this.sessionId));
-      form.append("width", String(width));
-      form.append("height", String(height));
-      form.append("file", blob, "screenshot.jpg");
+      form.append("width", String(frame.width));
+      form.append("height", String(frame.height));
+      form.append("file", frame.blob, "screenshot.jpg");
       await api("/tracking/screenshots", { method: "POST", form });
       this.update({ lastScreenshotAt: new Date() });
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        this.teardown(END_REASONS.heartbeat_lost);
+        void this.heartbeat(); // learns why the session ended and recovers if appropriate
         return;
       }
       void this.logEvent("capture_failed", err instanceof Error ? err.message : String(err));
@@ -276,8 +458,8 @@ export class Tracker {
         },
       });
       this.update({ lastLocationAt: new Date() });
-    } catch {
-      /* next ping will retry */
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) void this.heartbeat();
     }
   }
 
@@ -288,10 +470,13 @@ export class Tracker {
       const old = this.config;
       this.config = res.config;
       if (!res.session_active) {
-        this.teardown(END_REASONS[res.end_reason ?? ""] ?? "Session ended.");
+        if (res.end_reason === "heartbeat_lost") {
+          this.handleSessionLost(); // computer slept / went offline — continue automatically
+        } else {
+          this.teardown(END_REASONS[res.end_reason ?? ""] ?? "Session ended.");
+        }
         return;
       }
-      // Admin changed intervals: apply them without restarting.
       if (old && old.screenshot_interval_minutes !== res.config.screenshot_interval_minutes) this.scheduleScreenshot();
       if (old && old.location_interval_minutes !== res.config.location_interval_minutes) this.startLocationLoop();
     } catch (err) {

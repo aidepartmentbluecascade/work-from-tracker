@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useMemo, useState, type FormEvent } from "react";
+import { Link, useParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api";
-import { useAuth } from "../../auth";
+import { keys } from "../../queryClient";
 import AttendancePill from "../../components/AttendancePill";
 import Avatar from "../../components/Avatar";
 import {
@@ -11,12 +12,11 @@ import {
   IconChevronRight,
   IconClock,
   IconPin,
-  IconTrash,
 } from "../../components/Icons";
 import Lightbox, { type LightboxItem } from "../../components/Lightbox";
 import LocationMap from "../../components/LocationMap";
 import ScheduleEditor from "../../components/ScheduleEditor";
-import { allTimezones, END_REASONS, fmtDuration, fmtTime, isoDate, todayIn } from "../../format";
+import { allTimezones, END_REASONS, eventLabel, fmtDuration, fmtTime, isoDate, todayIn } from "../../format";
 import type {
   ActivityEvent,
   AttendanceRow,
@@ -38,17 +38,23 @@ const TABS: { key: Tab; label: string }[] = [
 
 export default function UserDetail() {
   const id = Number(useParams().id);
-  const [user, setUser] = useState<User | null>(null);
+  const qc = useQueryClient();
   const [tab, setTab] = useState<Tab>("activity");
-  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    api<User>(`/admin/users/${id}`)
-      .then(setUser)
-      .catch((e) => setError(e.message));
-  }, [id]);
+  // Show the row from the cached users list instantly, then refresh.
+  const { data: user, error } = useQuery({
+    queryKey: keys.user(id),
+    queryFn: () => api<User>(`/admin/users/${id}`),
+    initialData: () => qc.getQueryData<User[]>(keys.users)?.find((u) => u.id === id),
+    initialDataUpdatedAt: () => qc.getQueryState(keys.users)?.dataUpdatedAt,
+  });
 
-  if (error) return <div className="alert error">{error}</div>;
+  const setUser = (u: User) => {
+    qc.setQueryData(keys.user(id), u);
+    qc.invalidateQueries({ queryKey: keys.users, exact: true });
+  };
+
+  if (error && !user) return <div className="alert error">{error.message}</div>;
   if (!user) return <p className="muted">Loading…</p>;
 
   return (
@@ -87,88 +93,8 @@ export default function UserDetail() {
           <ScheduleEditor userId={user.id} timezone={user.timezone} />
         </section>
       )}
-      {tab === "profile" && (
-        <>
-          <Profile user={user} onSaved={setUser} />
-          <DangerZone user={user} />
-        </>
-      )}
+      {tab === "profile" && <Profile user={user} onSaved={setUser} />}
     </>
-  );
-}
-
-function DangerZone({ user }: { user: User }) {
-  const navigate = useNavigate();
-  const { user: me } = useAuth();
-  const [open, setOpen] = useState(false);
-  const [typed, setTyped] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const isSelf = me?.id === user.id;
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !busy && setOpen(false);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, busy]);
-
-  async function remove() {
-    setBusy(true);
-    setError(null);
-    try {
-      await api(`/admin/users/${user.id}`, { method: "DELETE" });
-      navigate("/admin/users", { replace: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="card danger-zone">
-      <div className="card-body row between wrap gap">
-        <div>
-          <h3>Delete user</h3>
-          <p className="muted small" style={{ margin: "4px 0 0" }}>
-            {isSelf
-              ? "You can't delete your own account."
-              : "Permanently removes this user, their sessions, locations, events, and all screenshots in storage."}
-          </p>
-        </div>
-        <button className="btn danger-outline" disabled={isSelf} onClick={() => setOpen(true)}>
-          <IconTrash size={16} /> Delete user
-        </button>
-      </div>
-
-      {open && (
-        <div className="modal-backdrop" onClick={() => !busy && setOpen(false)}>
-          <div className="modal card" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-icon">
-              <IconTrash size={22} />
-            </div>
-            <h2>Delete {user.full_name}?</h2>
-            <p className="muted" style={{ margin: 0 }}>
-              This permanently deletes the account and <strong>all of their tracking data and screenshots</strong>.
-              This can't be undone. To only stop access, turn off "Account active" instead.
-            </p>
-            <label className="field">
-              Type <strong>{user.full_name}</strong> to confirm
-              <input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
-            </label>
-            {error && <div className="alert error">{error}</div>}
-            <div className="form-actions">
-              <button className="btn" onClick={() => setOpen(false)} disabled={busy}>
-                Cancel
-              </button>
-              <button className="btn danger" onClick={remove} disabled={busy || typed.trim() !== user.full_name}>
-                {busy ? "Deleting…" : "Delete permanently"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </section>
   );
 }
 
@@ -178,38 +104,38 @@ function shiftDay(day: string, delta: number): string {
   return isoDate(d);
 }
 
+function useDayData<T>(userId: number, kind: string, day: string, path: string, live: boolean) {
+  return useQuery({
+    queryKey: keys.dayData(userId, kind, day),
+    queryFn: () => api<T>(path),
+    refetchInterval: live ? 60_000 : false, // keep "today" fresh while the page is open
+  });
+}
+
 function Activity({ user }: { user: User }) {
   const tz = user.timezone;
   const today = todayIn(tz);
   const [day, setDay] = useState(today);
-  const [shots, setShots] = useState<Screenshot[] | null>(null);
-  const [pings, setPings] = useState<LocationPing[] | null>(null);
-  const [sessions, setSessions] = useState<WorkSession[] | null>(null);
-  const [events, setEvents] = useState<ActivityEvent[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [viewer, setViewer] = useState<number | null>(null);
-  const [att, setAtt] = useState<AttendanceRow | null>(null);
+  const live = day === today;
+  const base = `/admin/users/${user.id}`;
 
-  useEffect(() => {
-    setError(null);
-    const q = `?date=${day}`;
-    api<AttendanceRow[]>(`/admin/attendance?date=${day}&user_id=${user.id}`)
-      .then((r) => setAtt(r[0] ?? null))
-      .catch(() => setAtt(null));
-    Promise.all([
-      api<Screenshot[]>(`/admin/users/${user.id}/screenshots${q}`),
-      api<LocationPing[]>(`/admin/users/${user.id}/locations${q}`),
-      api<WorkSession[]>(`/admin/users/${user.id}/sessions${q}`),
-      api<ActivityEvent[]>(`/admin/users/${user.id}/events${q}`),
-    ])
-      .then(([s, l, se, ev]) => {
-        setShots(s);
-        setPings(l);
-        setSessions(se);
-        setEvents(ev);
-      })
-      .catch((e) => setError(e.message));
-  }, [user.id, day]);
+  const shotsQ = useDayData<Screenshot[]>(user.id, "screenshots", day, `${base}/screenshots?date=${day}`, live);
+  const pingsQ = useDayData<LocationPing[]>(user.id, "locations", day, `${base}/locations?date=${day}`, live);
+  const sessionsQ = useDayData<WorkSession[]>(user.id, "sessions", day, `${base}/sessions?date=${day}`, live);
+  const eventsQ = useDayData<ActivityEvent[]>(user.id, "events", day, `${base}/events?date=${day}`, live);
+  const attQ = useQuery({
+    queryKey: keys.attendance(day, user.id),
+    queryFn: () => api<AttendanceRow[]>(`/admin/attendance?date=${day}&user_id=${user.id}`),
+    refetchInterval: live ? 60_000 : false,
+  });
+
+  const shots = shotsQ.data ?? null;
+  const pings = pingsQ.data ?? null;
+  const sessions = sessionsQ.data ?? null;
+  const events = eventsQ.data ?? null;
+  const att = attQ.data?.[0] ?? null;
+  const error = (shotsQ.error ?? pingsQ.error ?? sessionsQ.error ?? eventsQ.error)?.message ?? null;
 
   const totalSeconds =
     sessions?.reduce((sum, s) => {
@@ -370,13 +296,17 @@ function Activity({ user }: { user: User }) {
             </ul>
             {events && events.length > 0 && (
               <>
-                <h3 style={{ margin: "18px 0 6px" }}>Events</h3>
+                <h3 style={{ margin: "18px 0 2px" }}>Events</h3>
+                <p className="faint small" style={{ margin: "0 0 6px" }}>
+                  When the employee switched away from or back to the tracker tab. Screenshots keep running while
+                  they work in other apps.
+                </p>
                 <ul className="timeline-list scroll-y">
                   {events.map((e) => (
                     <li key={e.id}>
                       <span className="t">{fmtTime(e.created_at, tz)}</span>
                       <span className="grow">
-                        {e.event_type.replace(/_/g, " ")}
+                        {eventLabel(e.event_type)}
                         {e.detail && <span className="faint small"> — {e.detail}</span>}
                       </span>
                     </li>

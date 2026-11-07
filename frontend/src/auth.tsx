@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, getToken, loginRequest, setToken } from "./api";
+import { queryClient } from "./queryClient";
 import type { User } from "./types";
 
 interface AuthState {
@@ -27,13 +28,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    const onLogout = () => setUser(null);
+    const onLogout = () => {
+      queryClient.clear();
+      setUser(null);
+    };
     window.addEventListener("wfh:logout", onLogout);
     return () => window.removeEventListener("wfh:logout", onLogout);
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
     const res = await loginRequest(email, password);
+    queryClient.clear(); // never show another account's cached data
     setToken(res.access_token);
     setUser(res.user);
     return res.user;
@@ -41,6 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     setToken(null);
+    queryClient.clear();
     setUser(null);
   }, []);
 

@@ -41,8 +41,28 @@ export function allTimezones(): string[] {
   return intl.supportedValuesOf ? intl.supportedValuesOf("timeZone") : ["UTC"];
 }
 
+export const EVENT_LABELS: Record<string, string> = {
+  tab_hidden: "Left the tracker tab",
+  tab_visible: "Returned to the tracker tab",
+  location_unavailable: "Location unavailable",
+  location_denied: "Location permission denied",
+  capture_failed: "Screenshot failed",
+  screen_locked: "Screen locked — tracking paused",
+  screen_unlocked: "Screen unlocked — tracking resumed",
+  session_resumed: "Tracking resumed after sleep / connection loss",
+  blank_screen: "Screen was blank (locked or display off) — screenshot skipped",
+  user_idle: "Inactive for 5+ minutes",
+  user_active: "Active again",
+  lock_detection_unavailable: "Lock detection not available in this browser",
+};
+
+export function eventLabel(type: string): string {
+  return EVENT_LABELS[type] ?? type.replace(/_/g, " ");
+}
+
 export const END_REASONS: Record<string, string> = {
   manual: "Stopped by user",
+  screen_locked: "Screen locked",
   sharing_stopped: "Screen sharing stopped",
   schedule_ended: "Scheduled hours ended",
   heartbeat_lost: "Connection lost / tab closed",
