@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../../api";
+import { useAuth } from "../../auth";
 import AttendancePill from "../../components/AttendancePill";
 import Avatar from "../../components/Avatar";
 import {
@@ -10,6 +11,7 @@ import {
   IconChevronRight,
   IconClock,
   IconPin,
+  IconTrash,
 } from "../../components/Icons";
 import Lightbox, { type LightboxItem } from "../../components/Lightbox";
 import LocationMap from "../../components/LocationMap";
@@ -85,8 +87,88 @@ export default function UserDetail() {
           <ScheduleEditor userId={user.id} timezone={user.timezone} />
         </section>
       )}
-      {tab === "profile" && <Profile user={user} onSaved={setUser} />}
+      {tab === "profile" && (
+        <>
+          <Profile user={user} onSaved={setUser} />
+          <DangerZone user={user} />
+        </>
+      )}
     </>
+  );
+}
+
+function DangerZone({ user }: { user: User }) {
+  const navigate = useNavigate();
+  const { user: me } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const isSelf = me?.id === user.id;
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !busy && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, busy]);
+
+  async function remove() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/admin/users/${user.id}`, { method: "DELETE" });
+      navigate("/admin/users", { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card danger-zone">
+      <div className="card-body row between wrap gap">
+        <div>
+          <h3>Delete user</h3>
+          <p className="muted small" style={{ margin: "4px 0 0" }}>
+            {isSelf
+              ? "You can't delete your own account."
+              : "Permanently removes this user, their sessions, locations, events, and all screenshots in storage."}
+          </p>
+        </div>
+        <button className="btn danger-outline" disabled={isSelf} onClick={() => setOpen(true)}>
+          <IconTrash size={16} /> Delete user
+        </button>
+      </div>
+
+      {open && (
+        <div className="modal-backdrop" onClick={() => !busy && setOpen(false)}>
+          <div className="modal card" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-icon">
+              <IconTrash size={22} />
+            </div>
+            <h2>Delete {user.full_name}?</h2>
+            <p className="muted" style={{ margin: 0 }}>
+              This permanently deletes the account and <strong>all of their tracking data and screenshots</strong>.
+              This can't be undone. To only stop access, turn off "Account active" instead.
+            </p>
+            <label className="field">
+              Type <strong>{user.full_name}</strong> to confirm
+              <input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
+            </label>
+            {error && <div className="alert error">{error}</div>}
+            <div className="form-actions">
+              <button className="btn" onClick={() => setOpen(false)} disabled={busy}>
+                Cancel
+              </button>
+              <button className="btn danger" onClick={remove} disabled={busy || typed.trim() !== user.full_name}>
+                {busy ? "Deleting…" : "Delete permanently"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 

@@ -100,7 +100,12 @@ export const IconAlarm = ({ size }: P) => (
     <path d="M12 9.5V13l2.5 1.5M4 4.5 6.5 2.5M20 4.5 17.5 2.5" />
   </Svg>
 );
-export const IconMonitor =({ size }: P) => (
+export const IconTrash = ({ size }: P) => (
+  <Svg size={size}>
+    <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
+  </Svg>
+);
+export const IconMonitor = ({ size }: P) => (
   <Svg size={size}>
     <rect x="3" y="4" width="18" height="12" rx="2" />
     <path d="M8 20h8M12 16v4" />

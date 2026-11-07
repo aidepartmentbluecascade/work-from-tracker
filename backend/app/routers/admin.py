@@ -104,6 +104,28 @@ def update_user(user_id: int, body: UserUpdate, db: Session = Depends(get_db), a
     return user
 
 
+@router.delete("/users/{user_id}")
+def delete_user(user_id: int, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """Permanently delete a user, all their tracking data, and their screenshots in GCS."""
+    user = _user_or_404(db, user_id)
+    if user.id == admin.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot delete your own account")
+    if user.role == Role.admin:
+        admins = db.scalar(select(func.count()).select_from(User).where(User.role == Role.admin))
+        if admins <= 1:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot delete the last admin")
+
+    # Remove images first: if GCS fails we keep the DB rows, so nothing is left orphaned.
+    try:
+        deleted_images = storage.delete_user_screenshots(user.id)
+    except Exception as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not delete screenshots from storage: {exc}") from exc
+
+    db.delete(user)  # sessions, screenshots, locations, events, schedule cascade in the database
+    db.commit()
+    return {"deleted": True, "screenshots_deleted": deleted_images}
+
+
 # ---------- timeline (work schedule) ----------
 
 @router.get("/users/{user_id}/schedule", response_model=list[ScheduleWindow])
@@ -201,6 +223,8 @@ def live(db: Session = Depends(get_db)):
     result: list[LiveUser] = []
     for s in sessions:
         user = db.get(User, s.user_id)
+        if user is None:  # deleted while this request was running
+            continue
         last_loc = db.scalars(
             select(LocationPing).where(LocationPing.session_id == s.id).order_by(LocationPing.captured_at.desc())
         ).first()

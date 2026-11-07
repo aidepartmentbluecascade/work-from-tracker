@@ -48,6 +48,15 @@ def upload_screenshot(user_id: int, captured_at: datetime, data: bytes, content_
     return object_name, f"gs://{settings.gcs_bucket}/{object_name}"
 
 
+def delete_user_screenshots(user_id: int) -> int:
+    """Delete every screenshot object stored for a user. Returns the number deleted."""
+    bucket = _bucket()
+    blobs = list(bucket.list_blobs(prefix=f"screenshots/user_{user_id}/"))
+    for i in range(0, len(blobs), 100):
+        bucket.delete_blobs(blobs[i : i + 100], on_error=lambda blob: None)  # ignore already-missing objects
+    return len(blobs)
+
+
 def signed_url(object_name: str) -> str:
     blob = _bucket().blob(object_name)
     return blob.generate_signed_url(
