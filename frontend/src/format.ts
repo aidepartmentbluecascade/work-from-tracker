@@ -55,6 +55,8 @@ export const EVENT_LABELS: Record<string, string> = {
   user_active: "Active again",
   page_reloaded: "Page refreshed — tracking resumed",
   lock_detection_unavailable: "Lock detection not available in this browser",
+  break: "On break",
+  break_ended: "Back from break — tracking resumed",
 };
 
 export function eventLabel(type: string): string {
@@ -63,6 +65,7 @@ export function eventLabel(type: string): string {
 
 export const END_REASONS: Record<string, string> = {
   manual: "Stopped by user",
+  break: "Break",
   screen_locked: "Screen locked",
   sharing_stopped: "Screen sharing stopped",
   schedule_ended: "Scheduled hours ended",

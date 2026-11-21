@@ -165,7 +165,10 @@ export default function Dashboard() {
                                 </span>
                               )}
                             </div>
-                            <div className="person-sub">{l.user.email}</div>
+                            <div className="person-sub">
+                              {l.user.email}
+                              {l.user.department_name ? ` · ${l.user.department_name}` : ""}
+                            </div>
                           </div>
                         </div>
                       </td>
@@ -245,10 +248,13 @@ export default function Dashboard() {
                     <td>
                       <div className="person">
                         <Avatar name={a.full_name} size={28} />
-                        <span className="person-name row gap-sm">
-                          {a.full_name}
-                          {a.is_working && <span className="live-dot" title="Working now" />}
-                        </span>
+                        <div>
+                          <span className="person-name row gap-sm">
+                            {a.full_name}
+                            {a.is_working && <span className="live-dot" title="Working now" />}
+                          </span>
+                          {a.department_name && <div className="person-sub">{a.department_name}</div>}
+                        </div>
                       </div>
                     </td>
                     <td>
@@ -308,7 +314,10 @@ export default function Dashboard() {
                     <td>
                       <div className="person">
                         <Avatar name={h.full_name} size={28} />
-                        <span className="person-name">{h.full_name}</span>
+                        <div>
+                          <span className="person-name">{h.full_name}</span>
+                          {h.department_name && <div className="person-sub">{h.department_name}</div>}
+                        </div>
                       </div>
                     </td>
                     <td className="mono">{h.sessions}</td>

@@ -1,4 +1,13 @@
-export type Role = "admin" | "user";
+export type Role = "admin" | "team_lead" | "user";
+
+export interface Department {
+  id: number;
+  name: string;
+  is_active: boolean;
+  created_at: string;
+  member_count: number;
+  team_lead_count: number;
+}
 
 export interface User {
   id: number;
@@ -9,6 +18,8 @@ export interface User {
   timezone: string;
   tracking_enabled: boolean;
   screenshot_interval_minutes: number | null;
+  department_id: number | null;
+  department_name: string | null;
   created_at: string;
 }
 
@@ -41,6 +52,8 @@ export interface AttendanceRow {
   full_name: string;
   email: string;
   timezone: string;
+  department_id: number | null;
+  department_name: string | null;
   day: string;
   expected_start: string | null;
   expected_end: string | null;
@@ -122,6 +135,8 @@ export interface InactivityAlert {
   full_name: string;
   email: string;
   timezone: string;
+  department_id: number | null;
+  department_name: string | null;
   kind: "idle" | "locked";
   started_at: string;
   detected_at: string;
@@ -139,6 +154,8 @@ export interface HoursRow {
   user_id: number;
   full_name: string;
   email: string;
+  department_id: number | null;
+  department_name: string | null;
   seconds: number;
   sessions: number;
 }
@@ -146,4 +163,14 @@ export interface HoursRow {
 export interface MyStats {
   seconds_today: number;
   seconds_this_week: number;
+}
+
+export function isManager(role: Role): boolean {
+  return role === "admin" || role === "team_lead";
+}
+
+export function roleLabel(role: Role): string {
+  if (role === "admin") return "Admin";
+  if (role === "team_lead") return "Team lead";
+  return "Employee";
 }

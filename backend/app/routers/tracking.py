@@ -137,7 +137,8 @@ def stop_session(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     if s.ended_at is None:
         end_session(db, s, body.reason)
-    if body.reason != "screen_locked":  # a lock pause keeps its alert open until unlock
+    # Lock/break pauses keep inactivity alerts open until unlock / resume work.
+    if body.reason not in ("screen_locked", "break"):
         close_open_alerts(db, user.id)
     return s
 

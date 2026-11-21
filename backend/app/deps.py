@@ -31,3 +31,43 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != Role.admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return user
+
+
+def require_manager(user: User = Depends(get_current_user)) -> User:
+    if user.role not in (Role.admin, Role.team_lead):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required")
+    return user
+
+
+def department_filter(actor: User) -> int | None:
+    """None = admin (no filter). Team leads are scoped to their own department."""
+    if actor.role == Role.admin:
+        return None
+    if actor.role == Role.team_lead:
+        if actor.department_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Team lead has no department assigned",
+            )
+        return actor.department_id
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required")
+
+
+def assert_can_manage_user(actor: User, target: User) -> None:
+    """Admin can manage anyone. Team leads can only manage employees in their department."""
+    if actor.role == Role.admin:
+        return
+    if actor.role != Role.team_lead:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required")
+    if target.role != Role.user or target.department_id != actor.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed for this user")
+
+
+def assert_can_view_user(actor: User, target: User) -> None:
+    """Admin can view anyone. Team leads can view anyone in their department (employees + themselves)."""
+    if actor.role == Role.admin:
+        return
+    if actor.role != Role.team_lead:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required")
+    if target.department_id != actor.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed for this user")

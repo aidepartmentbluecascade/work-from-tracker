@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import { IconMonitor } from "../components/Icons";
+import { isManager } from "../types";
 
 export default function Login() {
   const { user, login } = useAuth();
@@ -11,7 +12,7 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  if (user) return <Navigate to={user.role === "admin" ? "/admin" : "/"} replace />;
+  if (user) return <Navigate to={isManager(user.role) ? "/admin" : "/"} replace />;
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -19,7 +20,7 @@ export default function Login() {
     setError(null);
     try {
       const u = await login(email, password);
-      navigate(u.role === "admin" ? "/admin" : "/", { replace: true });
+      navigate(isManager(u.role) ? "/admin" : "/", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

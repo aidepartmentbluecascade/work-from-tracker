@@ -15,8 +15,8 @@ import type { HeartbeatResponse, TrackingConfig, WorkSession } from "./types";
 
 export interface TrackerStatus {
   active: boolean; // the user has started work and screen sharing is live
-  paused: boolean; // temporarily not tracking (screen locked / reconnecting)
-  pauseReason: string | null;
+  paused: boolean; // temporarily not tracking (break / screen locked / reconnecting)
+  pauseReason: string | null; // "break" | "screen_locked" | "reconnecting"
   sessionId: number | null;
   startedAt: Date | null;
   lastScreenshotAt: Date | null;
@@ -275,6 +275,17 @@ export class Tracker {
   }
 
   // ---------- pause / resume ----------
+
+  /** Employee starts a break: stop counting time but keep screen sharing alive. */
+  async takeBreak(): Promise<void> {
+    await this.pause("break");
+  }
+
+  /** Employee ends a break and continues tracking. */
+  async endBreak(): Promise<void> {
+    if (!this.running || !this.paused || this.status.pauseReason !== "break") return;
+    await this.resume("break_ended");
+  }
 
   /** Stop counting time (ends the server session) but keep screen sharing alive. */
   private async pause(reason: string) {

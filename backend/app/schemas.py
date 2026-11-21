@@ -21,6 +21,8 @@ class UserOut(ORM):
     timezone: str
     tracking_enabled: bool
     screenshot_interval_minutes: int | None
+    department_id: int | None = None
+    department_name: str | None = None
     created_at: datetime
 
 
@@ -44,6 +46,7 @@ class UserCreate(BaseModel):
     timezone: str = "UTC"
     tracking_enabled: bool = True
     screenshot_interval_minutes: int | None = Field(default=None, ge=1, le=240)
+    department_id: int | None = None
 
     check_tz = field_validator("timezone")(_check_tz)
 
@@ -57,8 +60,29 @@ class UserUpdate(BaseModel):
     tracking_enabled: bool | None = None
     # Send null explicitly to clear the override and use the global interval.
     screenshot_interval_minutes: int | None = Field(default=None, ge=1, le=240)
+    department_id: int | None = None
 
     check_tz = field_validator("timezone")(_check_tz)
+
+
+# ---------- departments ----------
+
+class DepartmentOut(ORM):
+    id: int
+    name: str
+    is_active: bool
+    created_at: datetime
+    member_count: int = 0
+    team_lead_count: int = 0
+
+
+class DepartmentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class DepartmentUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    is_active: bool | None = None
 
 
 # ---------- timeline ----------
@@ -103,6 +127,8 @@ class AttendanceRow(BaseModel):
     full_name: str
     email: str
     timezone: str
+    department_id: int | None = None
+    department_name: str | None = None
     day: date  # the user's local calendar day
     expected_start: datetime | None
     expected_end: datetime | None
@@ -211,6 +237,8 @@ class AlertOut(BaseModel):
     full_name: str
     email: str
     timezone: str
+    department_id: int | None = None
+    department_name: str | None = None
     kind: str
     started_at: datetime
     detected_at: datetime
@@ -228,5 +256,7 @@ class HoursRow(BaseModel):
     user_id: int
     full_name: str
     email: str
+    department_id: int | None = None
+    department_name: str | None = None
     seconds: float
     sessions: int

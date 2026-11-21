@@ -9,13 +9,16 @@ import Users from "./pages/admin/Users";
 import UserDetail from "./pages/admin/UserDetail";
 import SettingsPage from "./pages/admin/Settings";
 import Alerts from "./pages/admin/Alerts";
-import type { Role } from "./types";
+import Departments from "./pages/admin/Departments";
+import { isManager, type Role } from "./types";
 
-function RequireRole({ role, children }: { role: Role; children: ReactNode }) {
+function RequireRole({ roles, children }: { roles: Role[]; children: ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="center muted">Loading…</div>;
   if (!user) return <Navigate to="/login" replace />;
-  if (user.role !== role) return <Navigate to={user.role === "admin" ? "/admin" : "/"} replace />;
+  if (!roles.includes(user.role)) {
+    return <Navigate to={isManager(user.role) ? "/admin" : "/"} replace />;
+  }
   return <>{children}</>;
 }
 
@@ -26,7 +29,7 @@ export default function App() {
       <Route
         path="/"
         element={
-          <RequireRole role="user">
+          <RequireRole roles={["user"]}>
             <UserHome />
           </RequireRole>
         }
@@ -34,7 +37,7 @@ export default function App() {
       <Route
         path="/admin"
         element={
-          <RequireRole role="admin">
+          <RequireRole roles={["admin", "team_lead"]}>
             <AdminLayout />
           </RequireRole>
         }
@@ -42,8 +45,23 @@ export default function App() {
         <Route index element={<Dashboard />} />
         <Route path="users" element={<Users />} />
         <Route path="users/:id" element={<UserDetail />} />
-        <Route path="settings" element={<SettingsPage />} />
         <Route path="alerts" element={<Alerts />} />
+        <Route
+          path="departments"
+          element={
+            <RequireRole roles={["admin"]}>
+              <Departments />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="settings"
+          element={
+            <RequireRole roles={["admin"]}>
+              <SettingsPage />
+            </RequireRole>
+          }
+        />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

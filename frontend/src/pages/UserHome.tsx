@@ -4,7 +4,8 @@ import { api } from "../api";
 import { keys } from "../queryClient";
 import { useAuth } from "../auth";
 import Avatar from "../components/Avatar";
-import { IconCamera, IconClock, IconLogout, IconMonitor, IconPause, IconPin } from "../components/Icons";
+import { IconCamera, IconClock, IconLogout, IconMonitor, IconPause, IconPin, IconPlay } from "../components/Icons";
+import LogoutDialog from "../components/LogoutDialog";
 import { fmtDuration, fmtTime, hhmm, WEEKDAYS } from "../format";
 import { Tracker, type TrackerStatus } from "../tracker";
 import type { MyStats, TrackingConfig } from "../types";
@@ -21,6 +22,7 @@ export default function UserHome() {
   const [status, setStatus] = useState<TrackerStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [logoutOpen, setLogoutOpen] = useState(false);
   const [, setTick] = useState(0);
   const trackerRef = useRef<Tracker | null>(null);
 
@@ -89,6 +91,32 @@ export default function UserHome() {
     setBusy(false);
   }
 
+  async function takeBreak() {
+    setBusy(true);
+    setError(null);
+    try {
+      await tracker.takeBreak();
+      qc.invalidateQueries({ queryKey: ["me"] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function endBreak() {
+    setBusy(true);
+    setError(null);
+    try {
+      await tracker.endBreak();
+      qc.invalidateQueries({ queryKey: ["me"] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   /** Close an interrupted session without resuming (e.g. done for the day). */
   async function endInterrupted() {
     if (interruptedId === null) return;
@@ -101,7 +129,7 @@ export default function UserHome() {
     setBusy(false);
   }
 
-  async function signOut() {
+  async function confirmSignOut() {
     await tracker.stop("manual");
     logout();
   }
@@ -113,16 +141,22 @@ export default function UserHome() {
       document.title = "⚠ Click Resume — WFH Tracker";
     } else if (active) {
       wasActive.current = true;
-      document.title = status?.paused ? "⏸ Paused — WFH Tracker" : "● Tracking — WFH Tracker";
+      document.title =
+        status?.pauseReason === "break"
+          ? "☕ On break — WFH Tracker"
+          : status?.paused
+            ? "⏸ Paused — WFH Tracker"
+            : "● Tracking — WFH Tracker";
     } else if (wasActive.current && status?.message && status.message !== "You stopped work.") {
       document.title = "⚠ Tracking stopped — WFH Tracker";
     } else {
       document.title = "WFH Tracker";
     }
-  }, [active, status?.paused, status?.message, interruptedId]);
+  }, [active, status?.paused, status?.pauseReason, status?.message, interruptedId]);
 
   const tz = config?.timezone;
   const paused = active && (status?.paused ?? false);
+  const onBreak = paused && status?.pauseReason === "break";
   const canStart = !!config && config.tracking_enabled;
 
   return (
@@ -137,11 +171,23 @@ export default function UserHome() {
         <div className="row gap">
           {user && <Avatar name={user.full_name} size={30} />}
           <span className="person-name small">{user?.full_name}</span>
-          <button className="btn ghost icon" onClick={signOut} title="Sign out">
+          <button className="btn ghost icon" onClick={() => setLogoutOpen(true)} title="Sign out">
             <IconLogout />
           </button>
         </div>
       </header>
+
+      {logoutOpen && (
+        <LogoutDialog
+          detail={
+            active
+              ? "This will stop work tracking and sign you out. You will need to sign in again to continue."
+              : "You will need to sign in again to use WFH Tracker."
+          }
+          onClose={() => setLogoutOpen(false)}
+          onConfirm={confirmSignOut}
+        />
+      )}
 
       <main className="user-main">
         <section className={`card hero ${paused || interruptedId !== null ? "paused" : active ? "on" : ""}`}>
@@ -161,6 +207,14 @@ export default function UserHome() {
                 <p className="muted" style={{ margin: "4px 0 0" }}>
                   Your work session is still open. Click <strong>Resume</strong> and choose{" "}
                   <strong>Entire screen</strong> again to continue — your time keeps adding up.
+                </p>
+              </>
+            ) : onBreak ? (
+              <>
+                <h2>On break</h2>
+                <p className="muted" style={{ margin: "4px 0 0" }}>
+                  Tracking is paused. Break time isn't counted. Click <strong>Resume work</strong> when you're back —
+                  keep screen sharing on.
                 </p>
               </>
             ) : paused ? (
@@ -206,9 +260,20 @@ export default function UserHome() {
             )}
           </div>
           {active ? (
-            <button className="btn danger lg" onClick={stop} disabled={busy}>
-              Stop work
-            </button>
+            <div className="row gap wrap" style={{ justifyContent: "flex-end" }}>
+              {onBreak ? (
+                <button className="btn primary lg" onClick={endBreak} disabled={busy}>
+                  <IconPlay size={16} /> {busy ? "Resuming…" : "Resume work"}
+                </button>
+              ) : !paused ? (
+                <button className="btn lg" onClick={takeBreak} disabled={busy} title="Pause tracking for a break">
+                  <IconPause size={16} /> Take break
+                </button>
+              ) : null}
+              <button className="btn danger lg" onClick={stop} disabled={busy}>
+                Stop work
+              </button>
+            </div>
           ) : interruptedId !== null ? (
             <div className="row gap wrap">
               <button className="btn ghost" onClick={endInterrupted} disabled={busy}>
@@ -284,11 +349,12 @@ export default function UserHome() {
                   {config?.screenshot_interval_minutes ?? "–"} minutes (exact times vary).
                 </li>
                 <li>Your approximate location about every {config?.location_interval_minutes ?? "–"} minutes.</li>
-                <li>Start/stop times, when this tab is hidden or shown, and periods without keyboard or mouse use.</li>
+                <li>Start/stop times, breaks, when this tab is hidden or shown, and periods without keyboard or mouse use.</li>
               </ul>
               <p className="muted small" style={{ margin: 0 }}>
                 When you start, allow location and choose <strong>Entire screen</strong>. Keep this tab open (it can be
-                minimized). Closing it or clicking "Stop sharing" ends your session.
+                minimized). Use <strong>Take break</strong> to pause tracking without ending your day. Closing the tab
+                or clicking "Stop sharing" ends your session.
               </p>
             </div>
           </section>

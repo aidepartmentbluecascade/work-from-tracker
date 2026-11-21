@@ -1,10 +1,19 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../api";
 import { useAuth } from "../../auth";
 import Avatar from "../../components/Avatar";
-import { IconBell, IconLogout, IconMonitor, IconPulse, IconSliders, IconUsers } from "../../components/Icons";
+import {
+  IconBell,
+  IconBuilding,
+  IconLogout,
+  IconMonitor,
+  IconPulse,
+  IconSliders,
+  IconUsers,
+} from "../../components/Icons";
+import LogoutDialog from "../../components/LogoutDialog";
 import { fmtDuration } from "../../format";
 import { keys } from "../../queryClient";
 import type { AlertsResponse } from "../../types";
@@ -51,7 +60,15 @@ function useAlertNotifications() {
 
 export default function AdminLayout() {
   const { user, logout } = useAuth();
+  const [logoutOpen, setLogoutOpen] = useState(false);
   const unread = useAlertNotifications();
+  const isAdmin = user?.role === "admin";
+  const roleLabel =
+    user?.role === "admin"
+      ? "Administrator"
+      : user?.department_name
+        ? `Team lead · ${user.department_name}`
+        : "Team lead";
 
   return (
     <div className="shell">
@@ -73,17 +90,24 @@ export default function AdminLayout() {
           <NavLink to="/admin/users">
             <IconUsers /> Users
           </NavLink>
-          <NavLink to="/admin/settings">
-            <IconSliders /> Settings
-          </NavLink>
+          {isAdmin && (
+            <NavLink to="/admin/departments">
+              <IconBuilding /> Departments
+            </NavLink>
+          )}
+          {isAdmin && (
+            <NavLink to="/admin/settings">
+              <IconSliders /> Settings
+            </NavLink>
+          )}
         </nav>
         <div className="sidebar-foot">
           {user && <Avatar name={user.full_name} size={30} />}
           <div className="person-text grow" style={{ minWidth: 0 }}>
             <div className="person-name small">{user?.full_name}</div>
-            <div className="person-sub">Administrator</div>
+            <div className="person-sub">{roleLabel}</div>
           </div>
-          <button className="btn ghost icon" onClick={logout} title="Sign out">
+          <button className="btn ghost icon" onClick={() => setLogoutOpen(true)} title="Sign out">
             <IconLogout />
           </button>
         </div>
@@ -93,6 +117,7 @@ export default function AdminLayout() {
           <Outlet />
         </div>
       </main>
+      {logoutOpen && <LogoutDialog onClose={() => setLogoutOpen(false)} onConfirm={logout} />}
     </div>
   );
 }

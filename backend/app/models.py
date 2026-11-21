@@ -3,6 +3,7 @@ from datetime import datetime, time
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -23,7 +24,19 @@ from .database import Base
 
 class Role(str, enum.Enum):
     admin = "admin"
+    team_lead = "team_lead"
     user = "user"
+
+
+class Department(Base):
+    __tablename__ = "departments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    users: Mapped[list["User"]] = relationship(back_populates="department")
 
 
 class User(Base):
@@ -40,8 +53,13 @@ class User(Base):
     tracking_enabled: Mapped[bool] = mapped_column(default=True)
     # Per-user override; NULL means "use the global setting".
     screenshot_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Admins have no department. Team leads and employees belong to exactly one.
+    department_id: Mapped[int | None] = mapped_column(
+        ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    department: Mapped[Department | None] = relationship(back_populates="users")
     schedules: Mapped[list["WorkSchedule"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
@@ -96,7 +114,7 @@ class WorkSession(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # manual | sharing_stopped | schedule_ended | heartbeat_lost | superseded | location_denied
+    # manual | break | screen_locked | sharing_stopped | schedule_ended | heartbeat_lost | superseded | location_denied
     end_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -134,7 +152,7 @@ class LocationPing(Base):
 
 
 class InactivityAlert(Base):
-    """An inactivity period shown to admins. Only the admin side ever sees these."""
+    """An inactivity period shown to managers. Only the manager side ever sees these."""
 
     __tablename__ = "inactivity_alerts"
     __table_args__ = (Index("ix_alerts_detected", "detected_at"), Index("ix_alerts_user_open", "user_id", "ended_at"))
@@ -146,7 +164,7 @@ class InactivityAlert(Base):
     )
     kind: Mapped[str] = mapped_column(String(20))  # idle | locked
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # when inactivity began
-    # When admins should see it. For a lock this is lock time + threshold (hidden until then).
+    # When managers should see it. For a lock this is lock time + threshold (hidden until then).
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

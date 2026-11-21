@@ -8,7 +8,7 @@ import Avatar from "../../components/Avatar";
 import DeleteUserDialog from "../../components/DeleteUserDialog";
 import { IconPlus, IconSearch, IconTrash, IconUsers } from "../../components/Icons";
 import { allTimezones } from "../../format";
-import type { Role, User } from "../../types";
+import { roleLabel, type Department, type Role, type User } from "../../types";
 
 const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -35,9 +35,21 @@ export function StatusPill({ user }: { user: User }) {
 export default function Users() {
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const { user: me } = useAuth();
+  const isAdmin = me?.role === "admin";
+  const isLead = me?.role === "team_lead";
+
   const usersQ = useQuery({ queryKey: keys.users, queryFn: () => api<User[]>("/admin/users") });
+  const deptsQ = useQuery({
+    queryKey: keys.departments,
+    queryFn: () => api<Department[]>("/admin/departments"),
+    enabled: isAdmin,
+  });
   const users = usersQ.data ?? null;
+  const departments = (deptsQ.data ?? []).filter((d) => d.is_active);
+
   const [query, setQuery] = useState("");
+  const [deptFilter, setDeptFilter] = useState<string>("all");
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,34 +57,55 @@ export default function Users() {
   const [fullName, setFullName] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>("user");
+  const [departmentId, setDepartmentId] = useState<string>("");
   const [timezone, setTimezone] = useState(browserTz);
   const [busy, setBusy] = useState(false);
   const [toDelete, setToDelete] = useState<User | null>(null);
-  const { user: me } = useAuth();
 
   const load = () => qc.invalidateQueries({ queryKey: keys.users, exact: true });
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
     if (!users) return [];
-    return q ? users.filter((u) => u.full_name.toLowerCase().includes(q) || u.email.includes(q)) : users;
-  }, [users, query]);
+    const q = query.trim().toLowerCase();
+    return users.filter((u) => {
+      if (deptFilter === "unassigned" && u.department_id != null) return false;
+      if (deptFilter !== "all" && deptFilter !== "unassigned" && String(u.department_id) !== deptFilter) return false;
+      if (!q) return true;
+      return u.full_name.toLowerCase().includes(q) || u.email.includes(q);
+    });
+  }, [users, query, deptFilter]);
+
+  const needsDepartment = role === "user" || role === "team_lead";
 
   async function create(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await api<User>("/admin/users", {
-        method: "POST",
-        body: { email, full_name: fullName, password, role, timezone },
-      });
+      const body: Record<string, unknown> = {
+        email,
+        full_name: fullName,
+        password,
+        role: isLead ? "user" : role,
+        timezone,
+      };
+      if (isLead) {
+        // Backend forces department; omit client field.
+      } else if (needsDepartment) {
+        if (!departmentId) throw new Error("Select a department");
+        body.department_id = Number(departmentId);
+      } else {
+        body.department_id = null;
+      }
+      await api<User>("/admin/users", { method: "POST", body });
       setEmail("");
       setFullName("");
       setPassword("");
       setRole("user");
+      setDepartmentId("");
       setShowForm(false);
       await load();
+      await qc.invalidateQueries({ queryKey: keys.departments });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -85,10 +118,14 @@ export default function Users() {
       <div className="page-head">
         <div>
           <h1>Users</h1>
-          <p>Manage employees and admins, their timelines and capture settings.</p>
+          <p>
+            {isLead
+              ? "Add and manage employees in your department."
+              : "Manage employees, team leads and admins across departments."}
+          </p>
         </div>
         <button className="btn primary" onClick={() => setShowForm((s) => !s)}>
-          <IconPlus size={16} /> {showForm ? "Close" : "Add user"}
+          <IconPlus size={16} /> {showForm ? "Close" : isLead ? "Add employee" : "Add user"}
         </button>
       </div>
       {(error ?? usersQ.error?.message) && <div className="alert error">{error ?? usersQ.error?.message}</div>}
@@ -96,7 +133,7 @@ export default function Users() {
       {showForm && (
         <form className="card" onSubmit={create}>
           <div className="card-head">
-            <h3>New user</h3>
+            <h3>{isLead ? "New employee" : "New user"}</h3>
           </div>
           <div className="card-body form-grid">
             <label className="field">
@@ -118,13 +155,45 @@ export default function Users() {
               />
               <span className="hint">At least 8 characters</span>
             </label>
-            <label className="field">
-              Role
-              <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-                <option value="user">Employee (tracked)</option>
-                <option value="admin">Admin</option>
-              </select>
-            </label>
+            {isAdmin && (
+              <label className="field">
+                Role
+                <select
+                  value={role}
+                  onChange={(e) => {
+                    const next = e.target.value as Role;
+                    setRole(next);
+                    if (next === "admin") setDepartmentId("");
+                  }}
+                >
+                  <option value="user">Employee (tracked)</option>
+                  <option value="team_lead">Team lead</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+            )}
+            {isAdmin && needsDepartment && (
+              <label className="field">
+                Department
+                <select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} required>
+                  <option value="">Select department…</option>
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+                {departments.length === 0 && (
+                  <span className="hint">Create a department first under Departments.</span>
+                )}
+              </label>
+            )}
+            {isLead && (
+              <label className="field">
+                Department
+                <input value={me?.department_name ?? "Your department"} disabled />
+              </label>
+            )}
             <label className="field">
               Timezone
               <input list="tz-list" value={timezone} onChange={(e) => setTimezone(e.target.value)} required />
@@ -140,7 +209,7 @@ export default function Users() {
                 Cancel
               </button>
               <button className="btn primary" disabled={busy}>
-                {busy ? "Creating…" : "Create user"}
+                {busy ? "Creating…" : isLead ? "Create employee" : "Create user"}
               </button>
             </div>
           </div>
@@ -150,11 +219,24 @@ export default function Users() {
       <section className="card">
         <div className="card-head">
           <h3>
-            All users <span className="sub">{users?.length ?? 0}</span>
+            {isLead ? "Department users" : "All users"} <span className="sub">{filtered.length}</span>
           </h3>
-          <div className="search">
-            <IconSearch size={16} />
-            <input placeholder="Search name or email" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <div className="row gap wrap">
+            {isAdmin && (
+              <select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)} style={{ maxWidth: 200 }}>
+                <option value="all">All departments</option>
+                <option value="unassigned">Unassigned</option>
+                {(deptsQ.data ?? []).map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            <div className="search">
+              <IconSearch size={16} />
+              <input placeholder="Search name or email" value={query} onChange={(e) => setQuery(e.target.value)} />
+            </div>
           </div>
         </div>
         {users && filtered.length === 0 ? (
@@ -162,7 +244,7 @@ export default function Users() {
             <div className="empty-icon">
               <IconUsers />
             </div>
-            {query ? "No users match your search." : "No users yet."}
+            {query || deptFilter !== "all" ? "No users match your filters." : "No users yet."}
           </div>
         ) : (
           <div className="table-wrap">
@@ -171,6 +253,7 @@ export default function Users() {
                 <tr>
                   <th>Name</th>
                   <th>Role</th>
+                  {isAdmin && <th>Department</th>}
                   <th>Timezone</th>
                   <th>Screenshot every</th>
                   <th>Status</th>
@@ -190,10 +273,15 @@ export default function Users() {
                       </div>
                     </td>
                     <td>
-                      <span className={`pill ${u.role === "admin" ? "indigo" : ""}`}>
-                        {u.role === "admin" ? "Admin" : "Employee"}
+                      <span className={`pill ${u.role === "admin" ? "indigo" : u.role === "team_lead" ? "amber" : ""}`}>
+                        {roleLabel(u.role)}
                       </span>
                     </td>
+                    {isAdmin && (
+                      <td>
+                        {u.department_name ?? <span className="faint">—</span>}
+                      </td>
+                    )}
                     <td>{u.timezone}</td>
                     <td>
                       {u.screenshot_interval_minutes ? (
@@ -209,8 +297,14 @@ export default function Users() {
                       <button
                         className="btn ghost icon row-delete"
                         onClick={() => setToDelete(u)}
-                        disabled={u.id === me?.id}
-                        title={u.id === me?.id ? "You can't delete your own account" : `Delete ${u.full_name}`}
+                        disabled={u.id === me?.id || (isLead && u.role !== "user")}
+                        title={
+                          u.id === me?.id
+                            ? "You can't delete your own account"
+                            : isLead && u.role !== "user"
+                              ? "Team leads can only delete employees"
+                              : `Delete ${u.full_name}`
+                        }
                         aria-label={`Delete ${u.full_name}`}
                       >
                         <IconTrash size={17} />
@@ -233,6 +327,7 @@ export default function Users() {
             qc.removeQueries({ queryKey: keys.user(toDelete.id) });
             qc.invalidateQueries({ queryKey: keys.live });
             qc.invalidateQueries({ queryKey: ["attendance"] });
+            qc.invalidateQueries({ queryKey: keys.departments });
             setToDelete(null);
           }}
         />

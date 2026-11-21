@@ -2,6 +2,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api";
+import { useAuth } from "../../auth";
 import { keys } from "../../queryClient";
 import AttendancePill from "../../components/AttendancePill";
 import Avatar from "../../components/Avatar";
@@ -20,6 +21,7 @@ import { allTimezones, END_REASONS, eventLabel, fmtDuration, fmtTime, isoDate, t
 import type {
   ActivityEvent,
   AttendanceRow,
+  Department,
   LocationPing,
   Role,
   Screenshot,
@@ -72,6 +74,12 @@ export default function UserDetail() {
                 <span>{user.email}</span>
                 <span className="faint">•</span>
                 <span>{user.timezone}</span>
+                {user.department_name && (
+                  <>
+                    <span className="faint">•</span>
+                    <span>{user.department_name}</span>
+                  </>
+                )}
                 <StatusPill user={user} />
               </div>
             </div>
@@ -326,9 +334,19 @@ function Activity({ user }: { user: User }) {
 }
 
 function Profile({ user, onSaved }: { user: User; onSaved: (u: User) => void }) {
+  const { user: me } = useAuth();
+  const isAdmin = me?.role === "admin";
+  const deptsQ = useQuery({
+    queryKey: keys.departments,
+    queryFn: () => api<Department[]>("/admin/departments"),
+    enabled: isAdmin,
+  });
+  const departments = (deptsQ.data ?? []).filter((d) => d.is_active || d.id === user.department_id);
+
   const [fullName, setFullName] = useState(user.full_name);
   const [timezone, setTimezone] = useState(user.timezone);
   const [role, setRole] = useState<Role>(user.role);
+  const [departmentId, setDepartmentId] = useState(user.department_id ? String(user.department_id) : "");
   const [isActive, setIsActive] = useState(user.is_active);
   const [tracking, setTracking] = useState(user.tracking_enabled);
   const [useDefault, setUseDefault] = useState(user.screenshot_interval_minutes == null);
@@ -337,6 +355,8 @@ function Profile({ user, onSaved }: { user: User; onSaved: (u: User) => void }) 
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const needsDepartment = role === "user" || role === "team_lead";
+
   async function save(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -344,11 +364,14 @@ function Profile({ user, onSaved }: { user: User; onSaved: (u: User) => void }) 
     const body: Record<string, unknown> = {
       full_name: fullName,
       timezone,
-      role,
       is_active: isActive,
       tracking_enabled: tracking,
       screenshot_interval_minutes: useDefault ? null : intervalMin,
     };
+    if (isAdmin) {
+      body.role = role;
+      body.department_id = role === "admin" ? null : departmentId ? Number(departmentId) : null;
+    }
     if (password) body.password = password;
     try {
       const u = await api<User>(`/admin/users/${user.id}`, { method: "PATCH", body });
@@ -378,13 +401,48 @@ function Profile({ user, onSaved }: { user: User; onSaved: (u: User) => void }) 
             ))}
           </datalist>
         </label>
-        <label className="field">
-          Role
-          <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-            <option value="user">Employee (tracked)</option>
-            <option value="admin">Admin</option>
-          </select>
-        </label>
+        {isAdmin ? (
+          <label className="field">
+            Role
+            <select
+              value={role}
+              onChange={(e) => {
+                const next = e.target.value as Role;
+                setRole(next);
+                if (next === "admin") setDepartmentId("");
+              }}
+            >
+              <option value="user">Employee (tracked)</option>
+              <option value="team_lead">Team lead</option>
+              <option value="admin">Admin</option>
+            </select>
+          </label>
+        ) : (
+          <label className="field">
+            Role
+            <input value="Employee" disabled />
+          </label>
+        )}
+        {isAdmin && needsDepartment && (
+          <label className="field">
+            Department
+            <select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} required>
+              <option value="">Select department…</option>
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                  {!d.is_active ? " (inactive)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {!isAdmin && (
+          <label className="field">
+            Department
+            <input value={user.department_name ?? "—"} disabled />
+          </label>
+        )}
         <label className="field">
           New password
           <input

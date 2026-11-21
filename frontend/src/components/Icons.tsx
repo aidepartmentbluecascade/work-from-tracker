@@ -105,9 +105,14 @@ export const IconBell = ({ size }: P) => (
     <path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15L6 16zM10 20.5a2 2 0 0 0 4 0" />
   </Svg>
 );
-export const IconPause =({ size }: P) => (
+export const IconPause = ({ size }: P) => (
   <Svg size={size}>
     <path d="M9 6v12M15 6v12" />
+  </Svg>
+);
+export const IconPlay = ({ size }: P) => (
+  <Svg size={size}>
+    <path d="M8 5.5v13l11-6.5-11-6.5z" />
   </Svg>
 );
 export const IconTrash =({ size }: P) => (
@@ -119,5 +124,10 @@ export const IconMonitor = ({ size }: P) => (
   <Svg size={size}>
     <rect x="3" y="4" width="18" height="12" rx="2" />
     <path d="M8 20h8M12 16v4" />
+  </Svg>
+);
+export const IconBuilding = ({ size }: P) => (
+  <Svg size={size}>
+    <path d="M4 20V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v14M4 20h16M10 20v-4h4v4M8 8h2M8 12h2M14 8h2M14 12h2" />
   </Svg>
 );
