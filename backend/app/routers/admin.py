@@ -6,8 +6,8 @@ Admin sees everything. Team leads are scoped to their own department.
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .. import storage
 from ..database import get_db
@@ -15,6 +15,7 @@ from ..deps import (
     assert_can_manage_user,
     assert_can_view_user,
     department_filter,
+    in_department_clause,
     require_admin,
     require_manager,
 )
@@ -28,6 +29,7 @@ from ..models import (
     User,
     WorkSchedule,
     WorkSession,
+    department_memberships,
 )
 from ..schemas import (
     AlertOut,
@@ -36,6 +38,7 @@ from ..schemas import (
     AppSettingsOut,
     AppSettingsUpdate,
     DepartmentCreate,
+    DepartmentMembersUpdate,
     DepartmentOut,
     DepartmentUpdate,
     EventOut,
@@ -66,10 +69,12 @@ from ..timeline import (
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_manager)])
 
 
+def _user_load_options():
+    return (joinedload(User.department), selectinload(User.memberships))
+
+
 def _user_or_404(db: Session, user_id: int) -> User:
-    user = db.scalars(
-        select(User).options(joinedload(User.department)).where(User.id == user_id)
-    ).first()
+    user = db.scalars(select(User).options(*_user_load_options()).where(User.id == user_id)).first()
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
     return user
@@ -99,9 +104,29 @@ def _validate_role_department(role: Role, department_id: int | None) -> None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Team leads and employees must belong to a department")
 
 
+def _sync_employee_home(user: User) -> None:
+    """Keep users.department_id as a primary display dept for employees (from memberships)."""
+    if user.role != Role.user:
+        return
+    ids = {d.id for d in user.memberships}
+    if user.department_id in ids:
+        return
+    user.department_id = sorted(ids)[0] if ids else None
+
+
+def _add_employee_membership(db: Session, user: User, department_id: int) -> None:
+    dept = _dept_or_404(db, department_id)
+    if dept not in user.memberships:
+        user.memberships.append(dept)
+    _sync_employee_home(user)
+
+
 def _department_out(db: Session, dept: Department) -> DepartmentOut:
     member_count = db.scalar(
-        select(func.count()).select_from(User).where(User.department_id == dept.id)
+        select(func.count())
+        .select_from(department_memberships)
+        .join(User, User.id == department_memberships.c.user_id)
+        .where(department_memberships.c.department_id == dept.id, User.role == Role.user)
     ) or 0
     team_lead_count = db.scalar(
         select(func.count())
@@ -167,6 +192,73 @@ def update_department(
     return _department_out(db, dept)
 
 
+@router.put("/departments/{department_id}/members", response_model=DepartmentOut)
+def set_department_members(
+    department_id: int,
+    body: DepartmentMembersUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Set which employees belong to this department (visible to its team leads).
+
+    Employees may belong to multiple departments. Omitting someone only removes them
+    from *this* department; their other memberships stay. Team leads are unchanged.
+    """
+    dept = _dept_or_404(db, department_id)
+    wanted = list(dict.fromkeys(body.user_ids))  # unique, keep order
+    wanted_set = set(wanted)
+
+    if wanted:
+        found = db.scalars(
+            select(User).options(selectinload(User.memberships)).where(User.id.in_(wanted))
+        ).all()
+        by_id = {u.id: u for u in found}
+        missing = [uid for uid in wanted if uid not in by_id]
+        if missing:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"User(s) not found: {missing}")
+        for u in found:
+            if u.role != Role.user:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"{u.full_name} is a {u.role.value.replace('_', ' ')}, not an employee",
+                )
+
+    # Remove memberships for employees no longer selected for this department.
+    current_ids = set(
+        db.scalars(
+            select(department_memberships.c.user_id).where(
+                department_memberships.c.department_id == dept.id
+            )
+        ).all()
+    )
+    remove_ids = current_ids - wanted_set
+    if remove_ids:
+        db.execute(
+            delete(department_memberships).where(
+                department_memberships.c.department_id == dept.id,
+                department_memberships.c.user_id.in_(remove_ids),
+            )
+        )
+        for u in db.scalars(
+            select(User).options(selectinload(User.memberships)).where(User.id.in_(remove_ids))
+        ).all():
+            u.memberships = [d for d in u.memberships if d.id != dept.id]
+            _sync_employee_home(u)
+
+    # Add memberships for newly selected employees (keep their other departments).
+    add_ids = wanted_set - current_ids
+    if add_ids:
+        for u in db.scalars(
+            select(User).options(selectinload(User.memberships)).where(User.id.in_(add_ids))
+        ).all():
+            if dept not in u.memberships:
+                u.memberships.append(dept)
+            _sync_employee_home(u)
+
+    db.commit()
+    return _department_out(db, dept)
+
+
 # ---------- users ----------
 
 @router.get("/users", response_model=list[UserOut])
@@ -175,12 +267,12 @@ def list_users(
     db: Session = Depends(get_db),
     actor: User = Depends(require_manager),
 ):
-    q = select(User).options(joinedload(User.department)).order_by(User.full_name)
+    q = select(User).options(*_user_load_options()).order_by(User.full_name)
     scope = department_filter(actor)
     if scope is not None:
-        q = q.where(User.department_id == scope)
+        q = q.where(in_department_clause(scope))
     elif department_id is not None:
-        q = q.where(User.department_id == department_id)
+        q = q.where(in_department_clause(department_id))
     return [user_to_out(u) for u in db.scalars(q).unique().all()]
 
 
@@ -212,12 +304,14 @@ def create_user(body: UserCreate, db: Session = Depends(get_db), actor: User = D
         timezone=body.timezone,
         tracking_enabled=body.tracking_enabled if role == Role.user else False if role == Role.admin else body.tracking_enabled,
         screenshot_interval_minutes=body.screenshot_interval_minutes,
-        department_id=department_id,
+        department_id=None if role == Role.admin else department_id,
     )
     if role == Role.admin:
         user.tracking_enabled = False
-        user.department_id = None
     db.add(user)
+    db.flush()
+    if role == Role.user and department_id is not None:
+        _add_employee_membership(db, user, department_id)
     db.commit()
     return user_to_out(_user_or_404(db, user.id))
 
@@ -225,7 +319,7 @@ def create_user(body: UserCreate, db: Session = Depends(get_db), actor: User = D
 @router.get("/users/{user_id}", response_model=UserOut)
 def get_user(user_id: int, db: Session = Depends(get_db), actor: User = Depends(require_manager)):
     user = _user_or_404(db, user_id)
-    assert_can_view_user(actor, user)
+    assert_can_view_user(actor, user, db)
     return user_to_out(user)
 
 
@@ -237,8 +331,9 @@ def update_user(
     actor: User = Depends(require_manager),
 ):
     user = _user_or_404(db, user_id)
-    assert_can_manage_user(actor, user)
+    assert_can_manage_user(actor, user, db)
     data = body.model_dump(exclude_unset=True)
+    prev_role = user.role
 
     if actor.role == Role.team_lead:
         # Leads cannot change role or department.
@@ -263,17 +358,33 @@ def update_user(
             if not dept.is_active:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "Department is inactive")
 
+    dept_provided = "department_id" in data
+    new_dept = data.pop("department_id", None) if dept_provided else None
     if "password" in data:
         user.password_hash = hash_password(data.pop("password"))
     for key, value in data.items():
-        if value is None and key not in ("screenshot_interval_minutes", "department_id"):
-            continue  # only interval override / department may be cleared with null (admin→admin)
-        if key == "department_id" and value is None and user.role != Role.admin and data.get("role", user.role) != Role.admin:
+        if value is None and key not in ("screenshot_interval_minutes",):
             continue
         setattr(user, key, value)
+
     if user.role == Role.admin:
         user.department_id = None
+        user.memberships = []
         user.tracking_enabled = False
+    elif user.role == Role.team_lead:
+        # Team leads use a single home department; clear multi-memberships.
+        user.memberships = []
+        if dept_provided and new_dept is not None:
+            user.department_id = new_dept
+    elif user.role == Role.user:
+        if dept_provided and new_dept is not None:
+            # User form adds membership without removing other departments.
+            _add_employee_membership(db, user, new_dept)
+        elif prev_role != Role.user and user.department_id is not None:
+            # Demoted to employee: convert home dept into a membership.
+            _add_employee_membership(db, user, user.department_id)
+        _sync_employee_home(user)
+
     db.commit()
     return user_to_out(_user_or_404(db, user.id))
 
@@ -282,7 +393,7 @@ def update_user(
 def delete_user(user_id: int, db: Session = Depends(get_db), actor: User = Depends(require_manager)):
     """Permanently delete a user, all their tracking data, and their screenshots in GCS."""
     user = _user_or_404(db, user_id)
-    assert_can_manage_user(actor, user)
+    assert_can_manage_user(actor, user, db)
     if user.id == actor.id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot delete your own account")
     if user.role == Role.admin:
@@ -309,7 +420,7 @@ def delete_user(user_id: int, db: Session = Depends(get_db), actor: User = Depen
 @router.get("/users/{user_id}/schedule", response_model=list[ScheduleWindow])
 def get_schedule(user_id: int, db: Session = Depends(get_db), actor: User = Depends(require_manager)):
     user = _user_or_404(db, user_id)
-    assert_can_view_user(actor, user)
+    assert_can_view_user(actor, user, db)
     return user.schedules
 
 
@@ -321,7 +432,7 @@ def set_schedule(
     actor: User = Depends(require_manager),
 ):
     user = _user_or_404(db, user_id)
-    assert_can_manage_user(actor, user)
+    assert_can_manage_user(actor, user, db)
     user.schedules = [
         WorkSchedule(weekday=w.weekday, start_time=w.start_time, end_time=w.end_time) for w in body.windows
     ]
@@ -350,7 +461,7 @@ def update_settings(body: AppSettingsUpdate, db: Session = Depends(get_db), _: U
 
 def _day_range(db: Session, user_id: int, day: date, actor: User) -> tuple[User, datetime, datetime]:
     user = _user_or_404(db, user_id)
-    assert_can_view_user(actor, user)
+    assert_can_view_user(actor, user, db)
     start, end = local_day_bounds(day, user.timezone)
     return user, start, end
 
@@ -431,13 +542,13 @@ def live(db: Session = Depends(get_db), actor: User = Depends(require_manager)):
     result: list[LiveUser] = []
     for s in sessions:
         user = db.scalars(
-            select(User).options(joinedload(User.department)).where(User.id == s.user_id)
+            select(User).options(*_user_load_options()).where(User.id == s.user_id)
         ).first()
         if user is None:
             continue
         if user.role != Role.user:
             continue
-        if scope is not None and user.department_id != scope:
+        if scope is not None and not any(d.id == scope for d in user.memberships) and user.department_id != scope:
             continue
         last_loc = db.scalars(
             select(LocationPing).where(LocationPing.session_id == s.id).order_by(LocationPing.captured_at.desc())
@@ -480,14 +591,14 @@ def list_alerts(
     q = (
         select(InactivityAlert, User)
         .join(User, User.id == InactivityAlert.user_id)
-        .options(joinedload(User.department))
+        .options(*_user_load_options())
         .where(visible)
         .order_by(InactivityAlert.detected_at.desc())
         .limit(limit)
     )
     scope = department_filter(actor)
     if scope is not None:
-        q = q.where(User.department_id == scope)
+        q = q.where(in_department_clause(scope))
     rows = db.execute(q).unique().all()
 
     unread_q = (
@@ -497,20 +608,21 @@ def list_alerts(
         .where(visible, InactivityAlert.read_at.is_(None))
     )
     if scope is not None:
-        unread_q = unread_q.where(User.department_id == scope)
+        unread_q = unread_q.where(in_department_clause(scope))
     unread = db.scalar(unread_q)
 
-    return AlertsOut(
-        unread=unread or 0,
-        items=[
+    items: list[AlertOut] = []
+    for a, u in rows:
+        out = user_to_out(u)
+        items.append(
             AlertOut(
                 id=a.id,
                 user_id=u.id,
                 full_name=u.full_name,
                 email=u.email,
                 timezone=u.timezone,
-                department_id=u.department_id,
-                department_name=u.department.name if u.department else None,
+                department_id=out.department_id,
+                department_name=out.department_name,
                 kind=a.kind,
                 started_at=a.started_at,
                 detected_at=a.detected_at,
@@ -518,9 +630,8 @@ def list_alerts(
                 read_at=a.read_at,
                 duration_seconds=((a.ended_at or now) - a.started_at).total_seconds(),
             )
-            for a, u in rows
-        ],
-    )
+        )
+    return AlertsOut(unread=unread or 0, items=items)
 
 
 @router.post("/alerts/read-all")
@@ -534,8 +645,8 @@ def mark_alerts_read(db: Session = Depends(get_db), actor: User = Depends(requir
             .values(read_at=now)
         )
     else:
-        # Only mark alerts for users in this department.
-        user_ids = select(User.id).where(User.department_id == scope)
+        # Only mark alerts for users in this department (home or membership).
+        user_ids = select(User.id).where(in_department_clause(scope))
         db.execute(
             update(InactivityAlert)
             .where(
@@ -598,13 +709,14 @@ def _attendance_for(db: Session, user: User, day: date, grace: timedelta, now: d
         else:
             status_ = "absent"
 
+    out = user_to_out(user)
     return AttendanceRow(
         user_id=user.id,
         full_name=user.full_name,
         email=user.email,
         timezone=user.timezone,
-        department_id=user.department_id,
-        department_name=user.department.name if user.department else None,
+        department_id=out.department_id,
+        department_name=out.department_name,
         day=day,
         expected_start=window[0] if window else None,
         expected_end=window[1] if window else None,
@@ -630,17 +742,17 @@ def attendance(
 
     if user_id is not None:
         user = _user_or_404(db, user_id)
-        assert_can_view_user(actor, user)
+        assert_can_view_user(actor, user, db)
         users = [user]
     else:
         q = (
             select(User)
-            .options(joinedload(User.department))
+            .options(*_user_load_options())
             .where(User.role == Role.user, User.is_active.is_(True))
             .order_by(User.full_name)
         )
         if scope is not None:
-            q = q.where(User.department_id == scope)
+            q = q.where(in_department_clause(scope))
         users = list(db.scalars(q).unique().all())
 
     rows = []
@@ -666,12 +778,12 @@ def hours_report(
 
     users_q = (
         select(User)
-        .options(joinedload(User.department))
+        .options(*_user_load_options())
         .where(User.role == Role.user)
         .order_by(User.full_name)
     )
     if scope is not None:
-        users_q = users_q.where(User.department_id == scope)
+        users_q = users_q.where(in_department_clause(scope))
     users = list(db.scalars(users_q).unique().all())
     user_ids = {u.id for u in users}
 
@@ -690,15 +802,18 @@ def hours_report(
         row[0] += secs
         row[1] += 1
 
-    return [
-        HoursRow(
-            user_id=u.id,
-            full_name=u.full_name,
-            email=u.email,
-            department_id=u.department_id,
-            department_name=u.department.name if u.department else None,
-            seconds=totals.get(u.id, [0.0, 0])[0],
-            sessions=int(totals.get(u.id, [0.0, 0])[1]),
+    result: list[HoursRow] = []
+    for u in users:
+        out = user_to_out(u)
+        result.append(
+            HoursRow(
+                user_id=u.id,
+                full_name=u.full_name,
+                email=u.email,
+                department_id=out.department_id,
+                department_name=out.department_name,
+                seconds=totals.get(u.id, [0.0, 0])[0],
+                sessions=int(totals.get(u.id, [0.0, 0])[1]),
+            )
         )
-        for u in users
-    ]
+    return result

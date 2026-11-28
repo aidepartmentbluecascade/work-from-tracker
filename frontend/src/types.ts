@@ -20,6 +20,9 @@ export interface User {
   screenshot_interval_minutes: number | null;
   department_id: number | null;
   department_name: string | null;
+  /** Employees may belong to multiple departments (multiple team leads). */
+  department_ids: number[];
+  department_names: string[];
   created_at: string;
 }
 

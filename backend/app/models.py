@@ -5,6 +5,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Column,
     DateTime,
     Enum,
     Float,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
+    Table,
     Text,
     Time,
     func,
@@ -28,6 +30,15 @@ class Role(str, enum.Enum):
     user = "user"
 
 
+# Employees can belong to many departments (many team leads). Team leads use users.department_id.
+department_memberships = Table(
+    "department_memberships",
+    Base.metadata,
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("department_id", ForeignKey("departments.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
 class Department(Base):
     __tablename__ = "departments"
 
@@ -36,7 +47,16 @@ class Department(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    users: Mapped[list["User"]] = relationship(back_populates="department")
+    # Team leads (and legacy home department on users.department_id).
+    home_users: Mapped[list["User"]] = relationship(
+        back_populates="department",
+        foreign_keys="User.department_id",
+    )
+    # Employees assigned via the memberships join table.
+    members: Mapped[list["User"]] = relationship(
+        secondary=department_memberships,
+        back_populates="memberships",
+    )
 
 
 class User(Base):
@@ -53,13 +73,20 @@ class User(Base):
     tracking_enabled: Mapped[bool] = mapped_column(default=True)
     # Per-user override; NULL means "use the global setting".
     screenshot_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Admins have no department. Team leads and employees belong to exactly one.
+    # Home department for team leads. For employees, a primary display dept (synced from memberships).
     department_id: Mapped[int | None] = mapped_column(
         ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    department: Mapped[Department | None] = relationship(back_populates="users")
+    department: Mapped[Department | None] = relationship(
+        back_populates="home_users",
+        foreign_keys=[department_id],
+    )
+    memberships: Mapped[list[Department]] = relationship(
+        secondary=department_memberships,
+        back_populates="members",
+    )
     schedules: Mapped[list["WorkSchedule"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",

@@ -23,6 +23,9 @@ class UserOut(ORM):
     screenshot_interval_minutes: int | None
     department_id: int | None = None
     department_name: str | None = None
+    # Employees may belong to multiple departments (multiple team leads).
+    department_ids: list[int] = Field(default_factory=list)
+    department_names: list[str] = Field(default_factory=list)
     created_at: datetime
 
 
@@ -83,6 +86,12 @@ class DepartmentCreate(BaseModel):
 class DepartmentUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     is_active: bool | None = None
+
+
+class DepartmentMembersUpdate(BaseModel):
+    """Replace which employees belong to this department (team leads are unchanged)."""
+
+    user_ids: list[int] = Field(default_factory=list, max_length=1000)
 
 
 # ---------- timeline ----------

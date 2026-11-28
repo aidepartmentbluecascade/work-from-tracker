@@ -60,6 +60,28 @@ def _upgrade_schema() -> None:
             )
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_department_id ON users (department_id)"))
+        # Employees ↔ departments (many-to-many). Team leads keep users.department_id as home.
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS department_memberships (
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+                    PRIMARY KEY (user_id, department_id)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO department_memberships (user_id, department_id)
+                SELECT id, department_id FROM users
+                WHERE department_id IS NOT NULL AND role = 'user'
+                ON CONFLICT DO NOTHING
+                """
+            )
+        )
 
 
 def init_db() -> None:

@@ -74,10 +74,12 @@ export default function UserDetail() {
                 <span>{user.email}</span>
                 <span className="faint">•</span>
                 <span>{user.timezone}</span>
-                {user.department_name && (
+                {(user.department_names?.length ? user.department_names.join(", ") : user.department_name) && (
                   <>
                     <span className="faint">•</span>
-                    <span>{user.department_name}</span>
+                    <span>
+                      {user.department_names?.length ? user.department_names.join(", ") : user.department_name}
+                    </span>
                   </>
                 )}
                 <StatusPill user={user} />
@@ -423,7 +425,7 @@ function Profile({ user, onSaved }: { user: User; onSaved: (u: User) => void }) 
             <input value="Employee" disabled />
           </label>
         )}
-        {isAdmin && needsDepartment && (
+        {isAdmin && needsDepartment && role === "team_lead" && (
           <label className="field">
             Department
             <select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} required>
@@ -437,10 +439,35 @@ function Profile({ user, onSaved }: { user: User; onSaved: (u: User) => void }) 
             </select>
           </label>
         )}
+        {isAdmin && needsDepartment && role === "user" && (
+          <label className="field">
+            Add to department
+            <select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} required>
+              <option value="">Select department…</option>
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                  {!d.is_active ? " (inactive)" : ""}
+                </option>
+              ))}
+            </select>
+            <span className="hint">
+              Current: {user.department_names?.length ? user.department_names.join(", ") : "none"}. Saving adds this
+              department without removing others. Use Departments → Assign members to manage all at once.
+            </span>
+          </label>
+        )}
         {!isAdmin && (
           <label className="field">
             Department
-            <input value={user.department_name ?? "—"} disabled />
+            <input
+              value={
+                user.department_names?.length
+                  ? user.department_names.join(", ")
+                  : user.department_name ?? "—"
+              }
+              disabled
+            />
           </label>
         )}
         <label className="field">

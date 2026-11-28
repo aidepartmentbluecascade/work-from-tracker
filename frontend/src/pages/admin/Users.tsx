@@ -68,8 +68,9 @@ export default function Users() {
     if (!users) return [];
     const q = query.trim().toLowerCase();
     return users.filter((u) => {
-      if (deptFilter === "unassigned" && u.department_id != null) return false;
-      if (deptFilter !== "all" && deptFilter !== "unassigned" && String(u.department_id) !== deptFilter) return false;
+      const ids = u.department_ids?.length ? u.department_ids : u.department_id != null ? [u.department_id] : [];
+      if (deptFilter === "unassigned" && ids.length > 0) return false;
+      if (deptFilter !== "all" && deptFilter !== "unassigned" && !ids.includes(Number(deptFilter))) return false;
       if (!q) return true;
       return u.full_name.toLowerCase().includes(q) || u.email.includes(q);
     });
@@ -279,7 +280,9 @@ export default function Users() {
                     </td>
                     {isAdmin && (
                       <td>
-                        {u.department_name ?? <span className="faint">—</span>}
+                        {u.department_names?.length
+                          ? u.department_names.join(", ")
+                          : u.department_name ?? <span className="faint">—</span>}
                       </td>
                     )}
                     <td>{u.timezone}</td>

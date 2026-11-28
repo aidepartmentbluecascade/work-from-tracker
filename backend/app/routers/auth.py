@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from ..database import get_db
 from ..deps import get_current_user
@@ -13,9 +13,13 @@ from ..serializers import user_to_out
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
+def _user_opts():
+    return (joinedload(User.department), selectinload(User.memberships))
+
+
 def _load_user(db: Session, email: str) -> User | None:
     return db.scalars(
-        select(User).options(joinedload(User.department)).where(func.lower(User.email) == email.lower())
+        select(User).options(*_user_opts()).where(func.lower(User.email) == email.lower())
     ).first()
 
 
@@ -31,7 +35,5 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
 
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    loaded = db.scalars(
-        select(User).options(joinedload(User.department)).where(User.id == user.id)
-    ).first()
+    loaded = db.scalars(select(User).options(*_user_opts()).where(User.id == user.id)).first()
     return user_to_out(loaded or user)

@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api";
-import { IconBuilding, IconPlus } from "../../components/Icons";
+import AssignMembersDialog from "../../components/AssignMembersDialog";
+import { IconBuilding, IconPlus, IconUsers } from "../../components/Icons";
 import { keys } from "../../queryClient";
 import type { Department } from "../../types";
 
@@ -18,6 +19,7 @@ export default function Departments() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Department | null>(null);
   const [editName, setEditName] = useState("");
+  const [assigning, setAssigning] = useState<Department | null>(null);
 
   async function create(e: FormEvent) {
     e.preventDefault();
@@ -73,7 +75,7 @@ export default function Departments() {
       <div className="page-head">
         <div>
           <h1>Departments</h1>
-          <p>Create departments and assign team leads from the Users page.</p>
+          <p>Create departments and assign employees. An employee can belong to multiple departments (and team leads).</p>
         </div>
         <button className="btn primary" onClick={() => setShowForm((s) => !s)}>
           <IconPlus size={16} /> {showForm ? "Close" : "Add department"}
@@ -139,7 +141,7 @@ export default function Departments() {
             <div className="empty-icon">
               <IconBuilding />
             </div>
-            No departments yet. Create one, then add a team lead for it under Users.
+            No departments yet. Create one, add a team lead under Users, then assign members here.
           </div>
         ) : (
           <div className="table-wrap">
@@ -150,7 +152,7 @@ export default function Departments() {
                   <th>Team leads</th>
                   <th>Members</th>
                   <th>Status</th>
-                  <th style={{ width: 180 }} aria-label="Actions" />
+                  <th style={{ width: 280 }} aria-label="Actions" />
                 </tr>
               </thead>
               <tbody>
@@ -174,6 +176,9 @@ export default function Departments() {
                     </td>
                     <td style={{ textAlign: "right" }}>
                       <div className="row gap" style={{ justifyContent: "flex-end" }}>
+                        <button className="btn sm primary" onClick={() => setAssigning(d)}>
+                          <IconUsers size={14} /> Assign members
+                        </button>
                         <button
                           className="btn sm"
                           onClick={() => {
@@ -195,6 +200,8 @@ export default function Departments() {
           </div>
         )}
       </section>
+
+      {assigning && <AssignMembersDialog department={assigning} onClose={() => setAssigning(null)} />}
     </>
   );
 }
